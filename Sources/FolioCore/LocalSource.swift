@@ -33,7 +33,8 @@ public final class LocalSource: Source, @unchecked Sendable {
             s.artist = j["artist"] as? String
             s.summary = j["description"] as? String
             s.genres = (j["genre"] as? [String]) ?? []
-            s.status = SeriesStatus(rawValue: (j["status"] as? String ?? "").lowercased()) ?? .unknown
+            let st = j["status"] as? String ?? ""
+            s.status = SeriesStatus(rawValue: st.lowercased()) ?? SeriesStatus(engine: st)
         }
         return s
     }

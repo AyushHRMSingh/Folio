@@ -21,10 +21,6 @@ struct LibraryView: View {
     var query: String { filter.trimmingCharacters(in: .whitespaces) }
     var items: [LibraryEntry] { library.browse(category: category, query: filter) }
 
-    var continueItems: [LibraryEntry] {
-        Array(library.recents.filter { $0.isSaved }.filter { e in e.resumeChapter.map { $0.started || !$0.read } ?? false }.prefix(12))
-    }
-
     var gap: CGFloat { settings.gridGap.points }
 
     /// Exactly N columns, or as many as fit at the chosen cover width.
@@ -39,17 +35,17 @@ struct LibraryView: View {
     /// One box for everything: filters your library as you type; return also searches every source.
     var searchBar: some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                TextField("search your library — return searches every source", text: $filter)
-                    .textFieldStyle(.plain).font(.system(size: 18, weight: .light)).foregroundStyle(Theme.ink)
+            HStack(spacing: 15) {
+                TextField("Search your library", text: $filter)
+                    .textFieldStyle(.plain).font(.system(size: 20, weight: .light)).foregroundStyle(Theme.ink)
                     .focused($searchFocused)
                     .onSubmit { if !query.isEmpty { sourceSearch.run(query, library: library) } }
                 if sourceSearch.searching { ProgressView().controlSize(.small) }
                 if !filter.isEmpty {
                     if sourceSearch.searched != query {
-                        Text("↵ sources").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.faint)
+                        Text("↵ sources").font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.faint)
                     }
-                    Button { filter = "" } label: { Text("✕").font(.system(size: 12, design: .monospaced)) }
+                    Button { filter = "" } label: { Text("✕").font(.system(size: 13.5, design: .monospaced)) }
                         .buttonStyle(.plain).foregroundStyle(Theme.dim)
                 }
             }
@@ -60,8 +56,8 @@ struct LibraryView: View {
 
     /// One header: title and count on the left, search and tools on the right.
     var header: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 18) {
-            SectionTitle(title, count: items.count).lineLimit(1).fixedSize()
+        HStack(alignment: .firstTextBaseline, spacing: 22) {
+            SectionTitle(title, count: settings.categories.isEmpty ? items.count : nil).lineLimit(1).fixedSize()
             Spacer(minLength: 0)
             searchField
             LibraryTools(app: app, library: library)
@@ -70,10 +66,10 @@ struct LibraryView: View {
     }
 
     var searchField: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass").font(.system(size: 11)).foregroundStyle(Theme.faint)
+        HStack(spacing: 10) {
+            Image(systemName: "magnifyingglass").font(.system(size: 12.5)).foregroundStyle(Theme.faint)
             TextField("Search library", text: $filter)
-                .textFieldStyle(.plain).font(.system(size: 13)).foregroundStyle(Theme.ink)
+                .textFieldStyle(.plain).font(.system(size: 14.5)).foregroundStyle(Theme.ink)
                 .focused($searchFocused)
                 .onSubmit { if !query.isEmpty { sourceSearch.run(query, library: library) } }
             if sourceSearch.searching { ProgressView().controlSize(.small) }
@@ -81,7 +77,7 @@ struct LibraryView: View {
                 Button { filter = "" } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.faint) }.buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 10).padding(.vertical, 6)
+        .padding(.horizontal, 10).padding(.vertical, 8)
         .frame(minWidth: 110, maxWidth: 220)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 7))
     }
@@ -101,7 +97,12 @@ struct LibraryView: View {
             if let id = assigningID { AssignCategoriesSheet(library: library, seriesID: id) }
         }
         .onChange(of: app.searchFocus) { _, _ in searchFocused = true }
-        .onChange(of: filter) { _, f in if f.trimmingCharacters(in: .whitespaces).isEmpty { sourceSearch.run("", library: library) } }
+        .onChange(of: filter) { _, f in
+            if f.trimmingCharacters(in: .whitespaces).isEmpty { sourceSearch.query = ""; sourceSearch.run("", library: library) }
+        }
+        // A search started elsewhere (e.g. a series page's "Search All Sources") fills this field.
+        .onChange(of: sourceSearch.query) { _, q in if !q.isEmpty, q != filter { filter = q } }
+        .onAppear { if !sourceSearch.query.isEmpty, filter.isEmpty { filter = sourceSearch.query } }
         .onChange(of: settings.categories) { _, c in if let cur = category, !c.contains(where: { $0.id == cur }) { category = nil } }
     }
 
@@ -109,45 +110,45 @@ struct LibraryView: View {
         let items = self.items
         let q = query
         if library.savedEntries.isEmpty && q.isEmpty {
-            VStack(spacing: 22) {
+            VStack(spacing: 28) {
                 Text("Your library is empty.\nBetter start reading.")
-                    .font(.system(size: 28, weight: .light)).tracking(-0.6).multilineTextAlignment(.center)
+                    .font(.system(size: 30, weight: .light)).tracking(-0.6).multilineTextAlignment(.center)
                     .foregroundStyle(Theme.faint)
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
                     Button("Browse sources") { app.sidebar = .sources; app.path = NavigationPath() }.buttonStyle(.monoPrimary)
                     Button("Import files…") { app.importLocal() }.buttonStyle(.mono)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if items.isEmpty && q.isEmpty {
-            VStack(spacing: 14) {
+            VStack(spacing: 18) {
                 Text(settings.filters.active ? "No matches." : "Nothing in this category.")
-                    .font(.system(size: 28, weight: .light)).tracking(-0.6).foregroundStyle(Theme.faint)
-                HStack(spacing: 10) {
-                    if settings.filters.active { TextAction(title: "clear filters") { library.settings.filters = LibraryFilters() } }
-                    if category != nil { TextAction(title: "show all") { category = nil } }
+                    .font(.system(size: 30, weight: .light)).tracking(-0.6).foregroundStyle(Theme.faint)
+                HStack(spacing: 12) {
+                    if settings.filters.active { TextAction(title: "Clear filters") { library.settings.filters = LibraryFilters() } }
+                    if category != nil { TextAction(title: "Show all") { category = nil } }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ScrollView {
                 VStack(alignment: .leading, spacing: 34) {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 20) {
                         if !q.isEmpty {
                             Button { sourceSearch.run(q, library: library) } label: {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "globe").font(.system(size: 12))
-                                    Text("Search all sources for “\(q)”").font(.system(size: 13, weight: .medium))
+                                HStack(spacing: 10) {
+                                    Image(systemName: "globe").font(.system(size: 13.5))
+                                    Text("Search all sources for “\(q)”").font(.system(size: 14.5, weight: .medium))
                                     Spacer()
-                                    Image(systemName: "arrow.right").font(.system(size: 11))
+                                    Image(systemName: "arrow.right").font(.system(size: 12.5))
                                 }
-                                .foregroundStyle(Theme.ink).padding(.horizontal, 14).padding(.vertical, 10)
+                                .foregroundStyle(Theme.ink).padding(.horizontal, 14).padding(.vertical, 13)
                                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 8)).contentShape(Rectangle())
                             }
                             .buttonStyle(.plain)
                         }
                         if items.isEmpty {
-                            Text("Nothing in your library matches “\(q)”.").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.faint)
+                            Text("Nothing in your library matches “\(q)”.").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint)
                         } else if settings.libraryDisplay == .list {
                             LazyVStack(spacing: 0) { ForEach(items) { e in row(e) } }
                         } else {
@@ -155,13 +156,13 @@ struct LibraryView: View {
                         }
                     }
                     if !q.isEmpty {
-                        VStack(alignment: .leading, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 18) {
                             Eyebrow("In sources")
                             if sourceSearch.searched == q {
                                 SourceResults(app: app, model: sourceSearch, library: library)
                             } else {
-                                Text("Use “Search all sources” above to look beyond your library.")
-                                    .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.faint)
+                                Text("Press Return to search every source.")
+                                    .font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint)
                             }
                         }
                     }
@@ -174,7 +175,7 @@ struct LibraryView: View {
     var title: String {
         if !filter.isEmpty { return "Results" }
         if let c = category, let cat = settings.categories.first(where: { $0.id == c }) { return cat.name }
-        return "All Series"
+        return "Library"
     }
 
     func progress(_ e: LibraryEntry) -> Double? {
@@ -205,9 +206,9 @@ struct LibraryTools: View {
     var st: FolioSettings { library.settings }
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 5) {
             ToolPopover(title: "View") { viewPanel }
-            ToolPopover(title: st.filters.active ? "Filter ●" : "Filter", active: st.filters.active) { filterPanel }
+            ToolPopover(title: "Filter", active: st.filters.active) { filterPanel }
             ToolPopover(title: "Sort") { sortPanel }
             Button { app.updateLibrary() } label: {
                 Group {
@@ -225,7 +226,7 @@ struct LibraryTools: View {
     }
 
     func toolButton(_ t: String, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) { Text(t).font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim) }.buttonStyle(.plain)
+        Button(action: action) { Text(t).font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim) }.buttonStyle(.plain)
     }
 
     // MARK: panels
@@ -237,9 +238,9 @@ struct LibraryTools: View {
             }
             if st.libraryDisplay != .list {
                 SetRow(label: "Cover size") {
-                    HStack(spacing: 10) {
+                    HStack(spacing: 12) {
                         Slider(value: $library.settings.gridSize, in: 90...320).controlSize(.small).frame(width: 130)
-                        Text("\(Int(st.gridSize))").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim).frame(width: 28, alignment: .trailing)
+                        Text("\(Int(st.gridSize))").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.dim).frame(width: 28, alignment: .trailing)
                     }
                 }
                 SetRow(label: "Columns", hint: st.gridColumns == nil ? "as many as fit" : "exactly \(st.gridColumns!)") {
@@ -262,7 +263,7 @@ struct LibraryTools: View {
             SetRow(label: "Started") { MonoSwitch(isOn: $library.settings.filters.started) }
             SetRow(label: "Bookmarked") { MonoSwitch(isOn: $library.settings.filters.bookmarked) }
             SetRow(label: "Completed") { MonoSwitch(isOn: $library.settings.filters.completed) }
-            HStack { Spacer(); TextAction(title: "clear all", disabled: !st.filters.active) { library.settings.filters = LibraryFilters() } }.padding(.top, 12)
+            HStack { Spacer(); TextAction(title: "Clear all", disabled: !st.filters.active) { library.settings.filters = LibraryFilters() } }.padding(.top, 12)
         }
     }
 
@@ -274,15 +275,15 @@ struct LibraryTools: View {
                     else { library.settings.librarySort = o; library.settings.sortAscending = o.naturalAscending }
                 } label: {
                     HStack {
-                        Text(o.label).font(.system(size: 13, weight: st.librarySort == o ? .semibold : .regular))
+                        Text(o.label).font(.system(size: 14.5, weight: st.librarySort == o ? .semibold : .regular))
                             .foregroundStyle(st.librarySort == o ? Theme.ink : Theme.dim)
                         Spacer()
                         if st.librarySort == o {
                             Text(st.sortAscending ? o.ascendingLabel : o.descendingLabel)
-                                .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim)
+                                .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.dim)
                         }
                     }
-                    .padding(.vertical, 8).contentShape(Rectangle())
+                    .padding(.vertical, 10).contentShape(Rectangle())
                     .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
                 }
                 .buttonStyle(.plain)
@@ -305,19 +306,20 @@ struct ToolPopover<Content: View>: View {
 
     var body: some View {
         Button { open.toggle() } label: {
-            HStack(spacing: 4) {
-                Text(title).font(.system(size: 12.5, weight: active ? .semibold : .regular)).lineLimit(1).fixedSize()
-                Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold))
+            HStack(spacing: 5) {
+                Text(title).font(.system(size: 14)).lineLimit(1).fixedSize()
+                Circle().fill(Theme.ink).frame(width: 4, height: 4).opacity(active ? 1 : 0).padding(.leading, -1)
+                Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold))
             }
             .foregroundStyle(active || open || hover ? Theme.ink : Theme.dim)
-            .padding(.horizontal, 9).padding(.vertical, 4)
+            .padding(.horizontal, 9).padding(.vertical, 5)
             .background(hover || open ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
             .onHover { hover = $0 }
         }
         .buttonStyle(.plain)
         .popover(isPresented: $open, arrowEdge: .bottom) {
-            content().padding(.horizontal, 18).padding(.vertical, 12).frame(width: 360)
+            content().padding(.horizontal, 18).padding(.vertical, 16).frame(width: 360)
                 .background(Theme.bg)
         }
     }
@@ -370,7 +372,7 @@ struct LibraryListRow: View {
     @State private var hover = false
 
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(spacing: 18) {
             CoverView(series: entry.series, source: library.source(entry.series.sourceID), corner: 4).frame(width: 40)
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.series.title).font(.rowTitle).foregroundStyle(Theme.ink).lineLimit(1)
@@ -383,7 +385,7 @@ struct LibraryListRow: View {
             }
             if badges && entry.unread > 0 { Chip(text: "\(entry.unread)", filled: true) }
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
+        .padding(.horizontal, 10).padding(.vertical, 9)
         .background(hover ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
         .contentShape(Rectangle())
         .onHover { hover = $0 }
@@ -396,29 +398,44 @@ struct CategoryBar: View {
     @ObservedObject var library: Library
     @Binding var selection: String?
     let onManage: () -> Void
+    @State private var renaming: LibraryCategory?
+    @State private var renameText = ""
 
     var body: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
+            HStack(spacing: 10) {
                 pill("All", library.count(in: nil), selection == nil) { selection = nil }
                 ForEach(library.settings.categories) { c in
                     pill(c.name, library.count(in: c.id), selection == c.id) { selection = c.id }
+                        .contextMenu {
+                            Button("Rename…") { renameText = c.name; renaming = c }
+                            Button("Delete", role: .destructive) { library.deleteCategory(c.id) }
+                        }
                 }
-                Button(action: onManage) { Text("Edit").font(.system(size: 12.5)) }
+                Button(action: onManage) { Text("Edit").font(.system(size: 14)) }
                     .buttonStyle(.plain).foregroundStyle(Theme.dim).padding(.leading, 6).help("Add, rename or delete categories")
             }
-            .padding(.horizontal, Theme.pad).padding(.vertical, 10)
+            .padding(.horizontal, Theme.pad).padding(.vertical, 13)
+        }
+        .alert("Rename category", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                let n = renameText.trimmingCharacters(in: .whitespaces)
+                if let c = renaming, !n.isEmpty { library.renameCategory(c.id, to: n) }
+                renaming = nil
+            }
+            Button("Cancel", role: .cancel) { renaming = nil }
         }
     }
 
     func pill(_ title: String, _ count: Int, _ on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            HStack(spacing: 6) {
+            HStack(spacing: 8) {
                 Text(title).fontWeight(on ? .semibold : .regular)
-                Text("\(count)").font(.system(size: 11).monospacedDigit()).foregroundStyle(on ? Theme.onInk.opacity(0.6) : Theme.faint)
+                Text("\(count)").font(.system(size: 12.5).monospacedDigit()).foregroundStyle(on ? Theme.onInk.opacity(0.6) : Theme.faint)
             }
-            .font(.system(size: 12.5))
-            .padding(.horizontal, 13).padding(.vertical, 5)
+            .font(.system(size: 14))
+            .padding(.horizontal, 13).padding(.vertical, 6)
             .background(on ? Theme.ink : Color.clear, in: Capsule())
             .overlay { if !on { Capsule().strokeBorder(Theme.line) } }
             .foregroundStyle(on ? Theme.onInk : Theme.dim)
@@ -434,30 +451,45 @@ struct CategoriesSheet: View {
     @State private var newName = ""
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Categories").font(.title2.bold())
-            Text("Group your library. A series can be in several categories.").font(.callout).foregroundStyle(.secondary)
-            List {
-                ForEach(library.settings.categories) { c in
-                    HStack(spacing: 10) {
-                        TextField("Name", text: Binding(get: { c.name }, set: { library.renameCategory(c.id, to: $0) }))
-                            .textFieldStyle(.plain)
-                        Text("\(library.count(in: c.id))").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                        Button { library.moveCategory(c.id, by: -1) } label: { Image(systemName: "chevron.up") }.buttonStyle(.borderless)
-                        Button { library.moveCategory(c.id, by: 1) } label: { Image(systemName: "chevron.down") }.buttonStyle(.borderless)
-                        Button(role: .destructive) { library.deleteCategory(c.id) } label: { Image(systemName: "trash") }.buttonStyle(.borderless)
+        VStack(alignment: .leading, spacing: 18) {
+            Eyebrow("Categories")
+            Text("A series can be in several categories.").font(.system(size: 14)).foregroundStyle(Theme.faint)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(library.settings.categories) { c in
+                        HStack(spacing: 15) {
+                            MonoField(placeholder: "Name", text: Binding(get: { c.name }, set: { library.renameCategory(c.id, to: $0) }), width: 200)
+                            Spacer(minLength: 8)
+                            Text("\(library.count(in: c.id))").font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.faint)
+                            iconButton("chevron.up") { library.moveCategory(c.id, by: -1) }
+                            iconButton("chevron.down") { library.moveCategory(c.id, by: 1) }
+                            iconButton("trash") { library.deleteCategory(c.id) }
+                        }
+                        .padding(.vertical, 13)
+                        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
                     }
                 }
             }
-            .frame(minHeight: 160)
-            .overlay { if library.settings.categories.isEmpty { Text("No categories yet").foregroundStyle(.secondary) } }
-            HStack {
-                TextField("New category", text: $newName).textFieldStyle(.roundedBorder).onSubmit(add)
-                Button("Add", action: add).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
-            }
-            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
+            .overlay { if library.settings.categories.isEmpty { Text("No categories yet").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint) } }
+            addRow
+            HStack { Spacer(); Button("Done") { dismiss() }.buttonStyle(.monoPrimary).keyboardShortcut(.defaultAction) }
         }
-        .padding(20).frame(width: 440, height: 440)
+        .padding(22).frame(width: 440, height: 440).background(Theme.bg)
+    }
+
+    func iconButton(_ name: String, _ action: @escaping () -> Void) -> some View {
+        Button(action: action) { Image(systemName: name).font(.system(size: 12.5)).frame(width: 22, height: 22).contentShape(Rectangle()) }
+            .buttonStyle(.plain).foregroundStyle(Theme.dim)
+    }
+
+    var addRow: some View {
+        HStack(spacing: 12) {
+            MonoField(placeholder: "New category", text: $newName, width: 260).onSubmit(add)
+            Spacer()
+            Button("Add", action: add).buttonStyle(.mono).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .padding(.vertical, 8)
+        .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
 
     func add() { if library.addCategory(newName) != nil { newName = "" } }
@@ -473,25 +505,40 @@ struct AssignCategoriesSheet: View {
     var current: Set<String> { Set(library.entry(seriesID)?.categoryIDs ?? []) }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Categories for “\(library.entry(seriesID)?.series.title ?? "")”").font(.title3.bold()).lineLimit(2)
-            List(library.settings.categories) { c in
-                Toggle(c.name, isOn: Binding(
-                    get: { current.contains(c.id) },
-                    set: { on in
-                        var s = current; if on { s.insert(c.id) } else { s.remove(c.id) }
-                        library.setCategories(seriesID, library.settings.categories.map(\.id).filter(s.contains))
-                    }))
+        VStack(alignment: .leading, spacing: 18) {
+            Eyebrow("Categories")
+            Text(library.entry(seriesID)?.series.title ?? "").font(.system(size: 20, weight: .light)).foregroundStyle(Theme.ink).lineLimit(2)
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(library.settings.categories) { c in
+                        let on = current.contains(c.id)
+                        Button {
+                            var s = current; if on { s.remove(c.id) } else { s.insert(c.id) }
+                            library.setCategories(seriesID, library.settings.categories.map(\.id).filter(s.contains))
+                        } label: {
+                            HStack {
+                                Text(c.name).font(.system(size: 14.5)).foregroundStyle(Theme.ink)
+                                Spacer()
+                                Image(systemName: on ? "checkmark" : "").font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.ink)
+                            }
+                            .padding(.vertical, 14).contentShape(Rectangle())
+                            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
-            .frame(minHeight: 140)
-            .overlay { if library.settings.categories.isEmpty { Text("Create your first category below").foregroundStyle(.secondary) } }
-            HStack {
-                TextField("New category", text: $newName).textFieldStyle(.roundedBorder).onSubmit(add)
-                Button("Add", action: add).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
+            .overlay { if library.settings.categories.isEmpty { Text("No categories yet").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint) } }
+            HStack(spacing: 12) {
+                MonoField(placeholder: "New category", text: $newName, width: 220).onSubmit(add)
+                Spacer()
+                Button("Add", action: add).buttonStyle(.mono).disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            HStack { Spacer(); Button("Done") { dismiss() }.keyboardShortcut(.defaultAction) }
+            .padding(.vertical, 8)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
+            HStack { Spacer(); Button("Done") { dismiss() }.buttonStyle(.monoPrimary).keyboardShortcut(.defaultAction) }
         }
-        .padding(20).frame(width: 380, height: 380)
+        .padding(22).frame(width: 380, height: 380).background(Theme.bg)
     }
 
     func add() {
@@ -564,16 +611,16 @@ struct SourceResults: View {
     var failed: [GlobalSearchModel.Group] { model.groups.filter { if case .failed = $0.state { true } else { false } } }
 
     var body: some View {
-        LazyVStack(alignment: .leading, spacing: 26) {
+        LazyVStack(alignment: .leading, spacing: 32) {
             ForEach(withResults) { g in
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 8) {
-                        Text(g.name).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
-                        Text("\(g.series.count)").font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.faint)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Text(g.name).font(.system(size: 16.5, weight: .semibold)).foregroundStyle(Theme.ink)
+                        Text("\(g.series.count)").font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.faint)
                     }
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(alignment: .top, spacing: 14) {
-                            ForEach(g.series) { s in
+                        HStack(alignment: .top, spacing: 18) {
+                            ForEach(g.series.filter { !library.isBlacklisted($0) }) { s in
                                 NavigationLink(value: s) {
                                     SeriesCard(series: s, source: library.source(s.sourceID), inLibrary: library.contains(s), compact: true,
                                                onToggleSave: { Task { await app.toggleSaved(s) } })
@@ -587,16 +634,16 @@ struct SourceResults: View {
                 }
             }
             if !pending.isEmpty {
-                Text("searching \(pending.map(\.name).joined(separator: ", "))…").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim)
+                Text("searching \(pending.map(\.name).joined(separator: ", "))…").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim)
             }
             ForEach(failed) { g in
-                if case .failed(let m) = g.state { Text("\(g.name): \(m)").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim) }
+                if case .failed(let m) = g.state { Text("\(g.name): \(m)").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.dim) }
             }
             if !empty.isEmpty && !model.searching {
-                Text("no results from \(empty.map(\.name).joined(separator: ", "))").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.faint)
+                Text("no results from \(empty.map(\.name).joined(separator: ", "))").font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.faint)
             }
             if withResults.isEmpty && pending.isEmpty && !model.groups.isEmpty {
-                Text("nothing found for “\(model.searched)”").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.faint)
+                Text("nothing found for “\(model.searched)”").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint)
             }
         }
     }

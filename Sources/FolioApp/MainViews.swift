@@ -18,7 +18,6 @@ struct RootView: View {
         .background(Theme.bg)
         .tint(Theme.ink)
         .sheet(item: $app.migrating) { e in MigrateSheet(app: app, entry: e) }
-        .sheet(item: $app.web) { t in WebSheet(target: t) { app.web = nil } }
         .alert("Your library couldn\u{2019}t be read", isPresented: .constant(library.loadProblem != nil)) {
             Button("Quit and keep the file") { NSApp.terminate(nil) }
             Button("Start with an empty library", role: .destructive) { library.startFresh() }
@@ -44,11 +43,7 @@ struct RootView: View {
                 case .search: LibraryView(app: app, library: library)
                 case .library: LibraryView(app: app, library: library)
                 case .recents: RecentsView(app: app, library: library)
-                case .sources: SourcesView(app: app, library: library)
-                case .extensions: ExtensionsView(app: app, model: app.extensions, library: library)
-                case .source(let id):
-                    if let src = library.source(id) { BrowseView(app: app, source: src).id(id) }
-                    else { ContentUnavailableView("Source removed", systemImage: "questionmark.folder") }
+                case .sources, .extensions, .source: SourcesView(app: app, library: library)
                 case .settings: SettingsView(app: app, library: library)
                 }
             }
@@ -58,6 +53,19 @@ struct RootView: View {
                 SeriesView(app: app, library: library, series: $0)
                     .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
             }
+            .navigationDestination(for: SourceRoute.self) { route in
+                Group {
+                    switch route {
+                    case .extensions: ExtensionsView(app: app, model: app.extensions, library: library)
+                    case .browse(let id):
+                        if let src = library.source(id) { BrowseView(app: app, source: src).id(id) }
+                        else { ContentUnavailableView("Source removed", systemImage: "questionmark.folder") }
+                    }
+                }
+                .navigationBarBackButtonHidden(true)     // the page has its own BackLink; the title bar stays empty
+                .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+            }
+            .navigationDestination(for: SettingsPage.self) { SettingsPageView(app: app, library: library, page: $0) }
         }
         .toolbarBackground(Theme.bg, for: .windowToolbar)         // a solid, fixed bar: content scrolls beneath it, never through it
         .toolbarBackground(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
@@ -65,12 +73,23 @@ struct RootView: View {
         .background(Theme.bg)
         .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
         .overlay(alignment: .bottom) { Banner(app: app) }
-        .onChange(of: app.sidebar) { _, _ in app.path = NavigationPath() }
+        .onChange(of: app.sidebar) { _, new in
+            // `.extensions` / `.source(id)` stay usable as shorthand: show Sources and push the page.
+            switch new {
+            case .extensions?: app.sidebar = .sources; app.path = NavigationPath([SourceRoute.extensions])
+            case .source(let id)?: app.sidebar = .sources; app.path = NavigationPath([SourceRoute.browse(id)])
+            case .sources?: break      // keeps a route we just pushed
+            default: app.path = NavigationPath()
+            }
+        }
         .onChange(of: library.settings.appearance) { _, _ in app.applyAppearance() }
     }
 }
 
 // MARK: - Sidebar: app navigation lives in the content, not the title bar
+
+/// Pages pushed from Sources, so their back stack matches every other page.
+enum SourceRoute: Hashable { case browse(String), extensions }
 
 struct Sidebar: View {
     @ObservedObject var app: AppModel
@@ -85,8 +104,12 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("folio").font(.system(size: 15, weight: .bold, design: .monospaced)).tracking(-0.6).foregroundStyle(Theme.ink)
-                .padding(.leading, 10).padding(.bottom, 14)
+            VStack(spacing: 10) {
+                FolioMark().frame(width: 132)
+                Text(".folio").font(.system(size: 24, weight: .bold, design: .monospaced)).tracking(-0.8).foregroundStyle(Theme.ink)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 6).padding(.bottom, 22)
             row("Library", "books.vertical", .library, on: current == .library || current == .search)
             row("Recent", "clock", .recents, on: current == .recents)
             row("Sources", "square.stack.3d.up", .sources, on: inSources)
@@ -95,16 +118,16 @@ struct Sidebar: View {
             if library.downloadsPending > 0 {
                 Button { queueOpen.toggle() } label: {
                     Label("Downloading · \(library.downloadsPending)", systemImage: "arrow.down.circle")
-                        .font(.system(size: 12)).foregroundStyle(Theme.dim)
-                        .padding(.horizontal, 10).padding(.vertical, 6)
+                        .font(.system(size: 13.5)).foregroundStyle(Theme.dim)
+                        .padding(.horizontal, 10).padding(.vertical, 8)
                 }
                 .buttonStyle(.plain)
                 .popover(isPresented: $queueOpen, arrowEdge: .trailing) { DownloadQueue(library: library) }
             }
             if library.settings.incognito {
                 Button { library.settings.incognito = false } label: {
-                    Label("Incognito", systemImage: "eye.slash").font(.system(size: 12, weight: .medium))
-                        .foregroundStyle(Theme.onInk).padding(.horizontal, 10).padding(.vertical, 5)
+                    Label("Incognito", systemImage: "eye.slash").font(.system(size: 13.5, weight: .medium))
+                        .foregroundStyle(Theme.onInk).padding(.horizontal, 10).padding(.vertical, 6)
                         .background(Theme.ink, in: Capsule())
                 }
                 .buttonStyle(.plain).padding(.leading, 6)
@@ -118,13 +141,13 @@ struct Sidebar: View {
 
     func row(_ title: String, _ icon: String, _ item: SidebarItem, on: Bool) -> some View {
         Button { app.sidebar = item; app.path = NavigationPath() } label: {
-            HStack(spacing: 9) {
-                Image(systemName: icon).font(.system(size: 13)).frame(width: 18)
-                Text(title).font(.system(size: 13, weight: on ? .semibold : .regular))
+            HStack(spacing: 11) {
+                Image(systemName: icon).font(.system(size: 14.5)).frame(width: 18)
+                Text(title).font(.system(size: 14.5, weight: on ? .semibold : .regular))
                 Spacer()
             }
             .foregroundStyle(on ? Theme.ink : Theme.dim)
-            .padding(.horizontal, 10).padding(.vertical, 6)
+            .padding(.horizontal, 10).padding(.vertical, 8)
             .background(on ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 6))
             .contentShape(Rectangle())
         }
@@ -136,10 +159,10 @@ struct Sidebar: View {
 struct DownloadQueue: View {
     @ObservedObject var library: Library
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Downloads").font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Downloads").font(.system(size: 14.5, weight: .semibold))
             Text("\(library.downloadsPending) chapter\(library.downloadsPending == 1 ? "" : "s") queued or downloading")
-                .font(.system(size: 12)).foregroundStyle(Theme.dim)
+                .font(.system(size: 13.5)).foregroundStyle(Theme.dim)
             Button("Cancel all", role: .destructive) { library.cancelDownloads() }
         }
         .padding(16).frame(minWidth: 220, alignment: .leading)
@@ -157,35 +180,35 @@ struct SourcesView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Sources").font(.system(size: 34, weight: .light)).tracking(-1).foregroundStyle(Theme.ink)
+                    Text("Sources").font(.system(size: 36, weight: .light)).tracking(-1).foregroundStyle(Theme.ink)
                 }
                 .padding(.top, 8).padding(.bottom, 18)
 
                 SourceRow(name: "Extensions", detail: library.visibleExtensionSources.isEmpty ? "add some" : "manage",
-                          icon: { Image(systemName: "puzzlepiece.extension").font(.system(size: 12)) }) { app.sidebar = .extensions }
+                          icon: { Image(systemName: "puzzlepiece.extension").font(.system(size: 13.5)) }) { app.path.append(SourceRoute.extensions) }
                 if library.visibleExtensionSources.isEmpty {
-                    Text("No extensions installed yet — open Extensions to add a repo and install sources.")
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.faint).padding(.vertical, 12)
+                    Text("No extensions installed. Open Extensions to add a repo and install sources.")
+                        .font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint).padding(.vertical, 16)
                 }
                 ForEach(library.visibleExtensionSources, id: \.id) { s in
-                    SourceRow(name: s.name, detail: s.info.lang, icon: { SourceIcon(source: s) }) { app.sidebar = .source(s.id) }
+                    SourceRow(name: s.name, detail: s.info.lang, icon: { SourceIcon(source: s) }) { app.path.append(SourceRoute.browse(s.id)) }
                 }
 
                 if !library.settings.servers.isEmpty {
                     Eyebrow("Servers").padding(.top, 34).padding(.bottom, 4)
                     ForEach(library.settings.servers) { sv in
-                        SourceRow(name: sv.name, detail: "opds", icon: { Image(systemName: "server.rack").font(.system(size: 12)) }) {
-                            app.sidebar = .source("opds-" + sv.id)
+                        SourceRow(name: sv.name, detail: "opds", icon: { Image(systemName: "server.rack").font(.system(size: 13.5)) }) {
+                            app.path.append(SourceRoute.browse("opds-" + sv.id))
                         }
                     }
                 }
 
                 Eyebrow("On this Mac").padding(.top, 34).padding(.bottom, 4)
-                SourceRow(name: "Local files", detail: ".cbz · .zip · folders", icon: { Image(systemName: "folder").font(.system(size: 12)) }) {
-                    app.sidebar = .source("local")
+                SourceRow(name: "Local files", detail: ".cbz · .zip · folders", icon: { Image(systemName: "folder").font(.system(size: 13.5)) }) {
+                    app.path.append(SourceRoute.browse("local"))
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)      // full width: no empty margin on the right
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Theme.pad).padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -201,14 +224,14 @@ struct SourceRow<Icon: View>: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 14) {
+            HStack(spacing: 18) {
                 icon().frame(width: 20, height: 20).foregroundStyle(Theme.dim)
-                Text(name).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+                Text(name).font(.system(size: 15.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
                 Spacer(minLength: 12)
-                Text(detail).font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.faint)
-                Text("→").font(.system(size: 14, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint)
+                Text(detail).font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.faint)
+                Text("→").font(.system(size: 15.5, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint)
             }
-            .padding(.vertical, 11)
+            .padding(.vertical, 14)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
             .background(hover ? Theme.surface : .clear)
             .contentShape(Rectangle())
@@ -225,7 +248,7 @@ struct SourceIcon: View {
     var body: some View {
         Group {
             if let icon { Image(nsImage: icon).resizable().clipShape(RoundedRectangle(cornerRadius: 4)) }
-            else { Image(systemName: "puzzlepiece.extension").font(.system(size: 12)) }
+            else { Image(systemName: "puzzlepiece.extension").font(.system(size: 13.5)) }
         }
         .task(id: source.info.iconPath) {
             guard let p = source.info.iconPath, ExtensionEngine.shared.state == .running else { return }
@@ -237,7 +260,7 @@ struct SourceIcon: View {
 struct Banner: View {
     @ObservedObject var app: AppModel
     var body: some View {
-        VStack(spacing: 6) {
+        VStack(spacing: 8) {
             if let e = app.error { msg(e, "exclamationmark.circle", autoHide: false) { app.error = nil } }     // errors stay until dismissed
             if let s = app.status { msg(s, "checkmark.circle", autoHide: true) { app.status = nil } }
         }
@@ -247,13 +270,13 @@ struct Banner: View {
     }
 
     func msg(_ t: String, _ icon: String, autoHide: Bool, close: @escaping () -> Void) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: icon).foregroundStyle(Theme.ink)
-            Text(t).font(.system(size: 12.5)).foregroundStyle(Theme.ink).textSelection(.enabled)
-            Button(action: close) { Image(systemName: "xmark").font(.system(size: 10, weight: .bold)) }
+            Text(t).font(.system(size: 14)).foregroundStyle(Theme.ink).textSelection(.enabled)
+            Button(action: close) { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)) }
                 .buttonStyle(.plain).foregroundStyle(Theme.dim)
         }
-        .padding(.horizontal, 14).padding(.vertical, 9)
+        .padding(.horizontal, 14).padding(.vertical, 12)
         .background(Theme.surface, in: Capsule())
         .overlay(Capsule().strokeBorder(Theme.line))
         .task { if autoHide { try? await Task.sleep(for: .seconds(6)); close() } }
@@ -269,7 +292,8 @@ struct CoverPlaceholder: View {
         ZStack {
             Theme.surface
             Text(title.split(separator: " ").prefix(2).compactMap(\.first).map(String.init).joined().uppercased())
-                .font(.system(size: 26, weight: .semibold)).foregroundStyle(Theme.faint)
+                .font(.system(size: 28, weight: .semibold)).foregroundStyle(Theme.faint)
+                .lineLimit(1).minimumScaleFactor(0.3).padding(.horizontal, 2)
         }
     }
 }
@@ -318,11 +342,11 @@ struct SeriesCard: View {
     @State private var hover = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             CoverView(series: series, source: source, highlight: hover)
                 .overlay(alignment: .bottomTrailing) {
                     if badge > 0 {
-                        Text("\(badge)").font(.system(size: 10.5, weight: .bold, design: .monospaced)).foregroundStyle(Theme.onInk)
+                        Text("\(badge)").font(.system(size: 11.5, weight: .bold, design: .monospaced)).foregroundStyle(Theme.onInk)
                             .padding(.horizontal, 5).padding(.vertical, 2).background(Theme.ink, in: RoundedRectangle(cornerRadius: 2))
                             .overlay { if isNew { RoundedRectangle(cornerRadius: 2).strokeBorder(Theme.onInk.opacity(0.9), lineWidth: 1.5).padding(1) } }   // "new" folds into the unread count
                             .padding(5)
@@ -330,20 +354,20 @@ struct SeriesCard: View {
                 }
                 .overlay(alignment: .bottomLeading) {
                     if downloaded > 0 {
-                        Text("↓\(downloaded)").font(.system(size: 10.5, weight: .bold, design: .monospaced)).foregroundStyle(.white)
+                        Text("↓\(downloaded)").font(.system(size: 11.5, weight: .bold, design: .monospaced)).foregroundStyle(.white)
                             .padding(.horizontal, 5).padding(.vertical, 2).background(Color.black.opacity(0.75), in: RoundedRectangle(cornerRadius: 2))
                             .padding(5)
                     }
                 }
                 .overlay(alignment: .bottom) {
                     if titles == .hover && hover {
-                        Text(series.title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(.white).lineLimit(2)
+                        Text(series.title).font(.system(size: 13, weight: .medium)).foregroundStyle(.white).lineLimit(2)
                             .padding(8).frame(maxWidth: .infinity, alignment: .leading).background(Color.black.opacity(0.82))
                     }
                 }
                 .overlay(alignment: .topLeading) {
                     if inLibrary || (hover && onToggleSave != nil) {
-                        Image(systemName: inLibrary ? "bookmark.fill" : "bookmark").font(.system(size: 9, weight: .semibold))
+                        Image(systemName: inLibrary ? "bookmark.fill" : "bookmark").font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(inLibrary ? Theme.onInk : Theme.ink)
                             .frame(width: 20, height: 20)
                             .background(inLibrary ? Theme.ink.opacity(0.85) : Color.black.opacity(0.7), in: Circle())
@@ -351,12 +375,12 @@ struct SeriesCard: View {
                             .padding(6)
                             .contentShape(Circle())
                             .onTapGesture { onToggleSave?() }
-                            .help(inLibrary ? "Saved — click to remove" : "Save to library")
+                            .help(inLibrary ? "In your library. Click to remove." : "Save to library")
                     }
                 }
             Hairline(value: progress ?? 0).padding(.horizontal, 1).opacity(progress == nil ? 0 : 1)     // always reserve the row: titles share a baseline
             if titles == .below {
-                Text(series.title).font(.system(size: 11.5, weight: .medium)).foregroundStyle(hover ? Theme.ink : Theme.dim)
+                Text(series.title).font(.system(size: 13, weight: .medium)).foregroundStyle(hover ? Theme.ink : Theme.dim)
                     .lineLimit(1).multilineTextAlignment(.leading)
             }
         }
@@ -387,17 +411,17 @@ struct RecentsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                HStack(alignment: .firstTextBaseline, spacing: 18) {
-                    Text("Recent").font(.system(size: 34, weight: .light)).tracking(-1).foregroundStyle(Theme.ink)
+                HStack(alignment: .firstTextBaseline, spacing: 22) {
+                    Text("Recent").font(.system(size: 36, weight: .light)).tracking(-1).foregroundStyle(Theme.ink)
                     Spacer()
                     Menu {
                         Button("Older than 1 hour") { library.clearHistory(olderThan: 3600); app.status = "Cleared history older than an hour." }
                         Button("Older than 1 day") { library.clearHistory(olderThan: 86400); app.status = "Cleared history older than a day." }
                         Divider()
                         Button("Everything…", role: .destructive) { confirmClear = true }
-                    } label: { Text("clear").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim) }
+                    } label: { Text("clear").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim) }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().disabled(library.recents.isEmpty)
-                    .help("Clear the Recent list (your place in each series is kept)")
+                    .help("Your place in each series is kept.")
                 }
                 .padding(.top, 8)
                 .confirmationDialog("Clear all reading history?", isPresented: $confirmClear, titleVisibility: .visible) {
@@ -405,7 +429,7 @@ struct RecentsView: View {
                 }
                 if library.recents.isEmpty {
                     Text("Nothing read yet. Series you read show up here.")
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.faint).padding(.top, 20)
+                        .font(.system(size: 15.5)).foregroundStyle(Theme.dim).padding(.top, 28)
                 }
                 LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(groups, id: \.0) { g in
@@ -414,7 +438,7 @@ struct RecentsView: View {
                     }
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .leading)      // full width: no empty margin on the right
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Theme.pad).padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -428,25 +452,25 @@ struct RecentRow: View {
     @State private var hover = false
 
     var body: some View {
-        HStack(spacing: 14) {
-            CoverView(series: entry.series, source: library.source(entry.series.sourceID), corner: 2).frame(width: 30)
-            Text(entry.series.title).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
-            if entry.isSaved { Image(systemName: "bookmark.fill").font(.system(size: 9)).foregroundStyle(Theme.dim).help("In your library") }
+        HStack(spacing: 18) {
+            CoverView(series: entry.series, source: library.source(entry.series.sourceID), corner: 3).frame(width: 46)
+            Text(entry.series.title).font(.system(size: 15, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+            if entry.isSaved { Image(systemName: "bookmark.fill").font(.system(size: 10)).foregroundStyle(Theme.dim).help("In your library") }
             if let c = entry.resumeChapter {
                 Text(c.started ? "\(c.chapter.name) · p\(c.lastPage + 1)\(c.pageCount.map { "/\($0)" } ?? "")"
                                : (c.read ? "finished \(c.chapter.name)" : "next: \(c.chapter.name)"))
-                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1)
+                    .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1)
             }
             Spacer(minLength: 12)
             if let d = entry.lastRead {
-                Text(d, format: .dateTime.hour().minute()).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.faint)
+                Text(d, format: .dateTime.hour().minute()).font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.faint)
             }
             Button { app.path.append(entry.series) } label: {
-                Text("details").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(hover ? Theme.dim : Theme.faint)
+                Text("details").font(.system(size: 13, design: .monospaced)).foregroundStyle(hover ? Theme.dim : Theme.faint)
             }
             .buttonStyle(.plain).help("Open the series page")
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 10)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
         .background(hover ? Theme.surface : .clear)
         .contentShape(Rectangle())
@@ -469,16 +493,16 @@ struct ContinueCard: View {
     @State private var hover = false
 
     var body: some View {
-        HStack(spacing: 14) {
-            Text(entry.series.title).font(.system(size: 14, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+        HStack(spacing: 18) {
+            Text(entry.series.title).font(.system(size: 15.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
             if let c = entry.resumeChapter {
                 Text(c.started ? "\(c.chapter.name) · p\(c.lastPage + 1)" : c.chapter.name)
-                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1)
+                    .font(.system(size: 13, design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1)
             }
             Spacer()
-            Text("→").font(.system(size: 14, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint)
+            Text("→").font(.system(size: 15.5, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint)
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
         .contentShape(Rectangle())
         .onHover { hover = $0 }
@@ -491,9 +515,9 @@ struct SectionTitle: View {
     var count: Int? = nil
     init(_ text: String, count: Int? = nil) { self.text = text; self.count = count }
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text(text).font(.system(size: 34, weight: .light)).foregroundStyle(Theme.ink).tracking(-1)
-            if let count { Text("\(count)").font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(Theme.faint).baselineOffset(14) }
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(text).font(.system(size: 36, weight: .light)).foregroundStyle(Theme.ink).tracking(-1)
+            if let count { Text("\(count)").font(.system(size: 13.5, weight: .medium, design: .monospaced)).foregroundStyle(Theme.faint).baselineOffset(14) }
         }
     }
 }
@@ -547,18 +571,19 @@ struct BrowseView: View {
                         SeriesCard(series: s, source: source, inLibrary: app.library.contains(s), onToggleSave: { Task { await app.toggleSaved(s) } })
                     }
                     .buttonStyle(.plain)
+                    .contextMenu { BlacklistMenuItem(app: app, series: s) }
                     .onAppear { if i > furthest { furthest = i; Task { await fillAhead() } } }
                 }
             }
             .padding(Theme.pad)
             if hasMore && !results.isEmpty {
                 // End-of-list sentinel: coming into view always pulls in the next pages.
-                HStack(spacing: 8) { ProgressView().controlSize(.small); Text("Loading more…").foregroundStyle(Theme.dim) }
+                HStack(spacing: 10) { ProgressView().controlSize(.small); Text("Loading more…").foregroundStyle(Theme.dim) }
                     .font(.callout).frame(maxWidth: .infinity).padding(.vertical, 28)
                     .onAppear { furthest = max(furthest, results.count); Task { await fillAhead() } }
                     .id("sentinel-\(results.count)")
             } else if !hasMore && !shownResults.isEmpty {
-                Text("You've reached the end · \(shownResults.count) series").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.faint)
+                Text("End of results").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.faint)
                     .frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, Theme.pad).padding(.bottom, 28)
             }
             if !loading && shownResults.isEmpty && !(hasMore && !results.isEmpty) {
@@ -590,25 +615,28 @@ struct BrowseView: View {
 
     /// The page's own title and tools — kept out of the titlebar, which is for navigation only.
     var browseHeader: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            BackLink(title: "Sources") { app.sidebar = .sources }
+        VStack(alignment: .leading, spacing: 5) {
+            BackLink(title: "Sources") { if !app.path.isEmpty { app.path.removeLast() } }
             browseTitleRow
         }
         .padding(.horizontal, Theme.pad).padding(.top, 8)
     }
 
     var browseTitleRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 18) {
-            Text(source.name).font(.system(size: 34, weight: .light)).tracking(-1).foregroundStyle(Theme.ink).lineLimit(1)
+        HStack(alignment: .firstTextBaseline, spacing: 22) {
+            Text(source.name).font(.system(size: 36, weight: .light)).tracking(-1).foregroundStyle(Theme.ink).lineLimit(1)
             if !activeQuery.isEmpty {
-                Text("“\(activeQuery)”").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1)
+                Text("“\(activeQuery)”").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim).lineLimit(1)
             }
             Spacer(minLength: 12)
             MonoField(placeholder: "Search \(source.name)", text: $query, width: 200)
                 .onSubmit { activeQuery = query; Task { await reset() } }
             if let ext, ext.info.supportsLatest, activeQuery.isEmpty, applied.activeCount == 0 {
-                toolTab("newest", on: latest) { if !latest { latest = true; Task { await reset() } } }
-                toolTab("popular", on: !latest) { if latest { latest = false; Task { await reset() } } }
+                Picker("", selection: Binding(get: { latest }, set: { v in if v != latest { latest = v; Task { await reset() } } })) {
+                    Text("Newest").tag(true)
+                    Text("Popular").tag(false)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
             }
             toolTab("hide saved", on: app.library.settings.hideSavedInBrowse) {
                 app.library.settings.hideSavedInBrowse.toggle()
@@ -635,7 +663,7 @@ struct BrowseView: View {
 
     func toolTab(_ t: String, on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(t).font(.system(size: 12, weight: on ? .semibold : .regular, design: .monospaced))
+            Text(t).font(.system(size: 13.5, weight: on ? .semibold : .regular, design: .monospaced))
                 .foregroundStyle(on ? Theme.ink : Theme.dim)
                 .overlay(alignment: .bottom) { if on { Rectangle().fill(Theme.ink).frame(height: 1.5).offset(y: 4) } }
         }
@@ -644,7 +672,8 @@ struct BrowseView: View {
 
     /// With "hide saved" on, series that were already in the library are left out.
     var shownResults: [Series] {
-        app.library.settings.hideSavedInBrowse ? results.filter { !savedAtLoad.contains($0.id) } : results
+        let r = results.filter { !app.library.isBlacklisted($0) }      // blacklisted series never show up
+        return app.library.settings.hideSavedInBrowse ? r.filter { !savedAtLoad.contains($0.id) } : r
     }
 
     func reset() async {
@@ -686,6 +715,20 @@ struct BrowseView: View {
         let src = source
         Task(priority: .utility) {
             for s in items { _ = await Images.shared.cover(s, source: src) }
+        }
+    }
+}
+
+
+/// "Blacklist" for a cover's right-click menu: hides the series everywhere at once; undo in Settings › Library.
+struct BlacklistMenuItem: View {
+    @ObservedObject var app: AppModel
+    let series: Series
+    var body: some View {
+        Divider()
+        Button("Blacklist \u{201C}\(series.title)\u{201D}", role: .destructive) {
+            app.library.blacklist(series)
+            app.status = "Blacklisted \u{201C}\(series.title)\u{201D}. Undo in Settings \u{203A} Library."
         }
     }
 }

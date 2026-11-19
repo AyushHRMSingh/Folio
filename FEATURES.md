@@ -160,6 +160,15 @@ Each item: **what** · *why it matters* · effort (S/M/L). ★ = do these first.
 - **Focus filter:** hide 18+ categories/sources while a chosen Focus (e.g. Work) is on. S–M
 - **Keyboard navigation in grids** (arrows/Return/Space, see principles). S
 
+### App icon (owner request)
+- **Bookshelf icon** — old leather-bound spines (oxblood, forest green, navy, cognac, ochre, gold bands) on a walnut
+  shelf, near-black tile. **Adopted** — source `Resources/AppIcon.svg`, built with `Tools/make-icon.sh` into `Resources/AppIcon.icns`, installed by `install.sh`.
+- **Icon customisation** — Settings › Appearance › App icon: Classic (multicolour), Black & white, or a single tint
+  colour. Running Dock icon via `NSApp.applicationIconImage`; Finder/Launchpad icon via
+  `NSWorkspace.setIcon(_:forFile:)` on the app bundle (check this doesn't break the code signature; with Developer ID
+  signing, keep the bundle untouched and only swap the Dock icon). Variants rendered from the same vector with a palette
+  swap. M
+
 ### First run & onboarding
 - ★ **First-run setup in three steps:** add a local folder · add an extension repo · (checks Java, offers the
   installer — ties to E2). Skippable; shown again from Settings › Sources. S

@@ -3,7 +3,7 @@
 A simple Tachimanga alternative for macOS. Goal: simple, fast, stable. Webtoon reading is the primary mode.
 Feature checklist: `PARITY.md` (derived from Tachimanga's own screens/settings). Batch 1 is built; batch 2 is next.
 **Worker sessions: read `WORKERS.md` first** — process, the owner's binding UX decisions, next steps and status.
-Ideas: `FEATURES.md`. Parked iPad/iPhone plan: `PORTING.md`.
+Ideas: `FEATURES.md`. Parked iPad/iPhone plan: `PORTING.md`. Proposed Suwayomi replacement: `FOLIO-CORE.md`.
 
 ## Layout
 - `Sources/FolioCore` — no UI. `Models`, `Source` protocol (Tachiyomi-style: popular/search/details/chapters/pages),
@@ -34,10 +34,11 @@ Launching with `FOLIO_DEBUG=<token>` makes Folio listen for distributed notifica
 (`DebugHook.swift`). No screen-recording permission is needed — snapshots capture Folio's own window.
 `Tools/qa.sh start|send|snap|log|stop` wraps it (off-screen, throwaway HOME, never steals focus).
 Commands: `size:WxH` `sidebar:library|recents|search|extensions|settings|<source id>` `series:<title>` `back` `read:<title>`
-`open-local:<folder>` `add-local:<folder>` `cat-new:<name>` `cat-set:<series>|<category>` `set:display=list|sort=title|incognito=on`
+`open-local:<folder>` `add-local:<folder>` (a series folder inside the local library; name or path) `cat-new:<name>` `cat-set:<series>|<category>` `set:display=list|sort=title|incognito=on|hidesaved=on|notice=on|off`
 `gsearch:<query>` `cmd:viewport:<f>` `cmd:points:<n>` `cmd:zoomin|zoomout|zoomreset` `cmd:next|prev` `cmd:page:<n>`
-`cmd:mode:webtoon|rightToLeft|leftToRight` `cmd:controls:on|off` `cmd:popover:chapters|settings|none` `cmd:autoscroll:on` `state` `snap:<png>` `quit`.
-Env: `FOLIO_DEBUG_DELAY=1.5` simulates slow page loads (used to prove load-in stability: every page load left the view still).
+`cmd:mode:webtoon|rightToLeft|leftToRight` `cmd:controls:on|off` `cmd:popover:chapters|settings|none` `web:<url>` `repo-add:<index url>` `blacklist:<title>` `cmd:autoscroll:on` `cmd:width:<0.3-1>|crop:on|double:on|split:on` (this comic only) `state` `snap:<png>` `quit`.
+Input/UI commands: `fullscreen:on|off` (toggles only if state differs; logs result after 2s), `key:<spec>` (synthesized keyDown+keyUp via NSApp.sendEvent, e.g. `key:esc` `key:space` `key:s` `key:]` `key:cmd+[` `key:cmd+shift+k`; logs target window + first responder), `popover-dump` (logs class/frame/accessibility tree of visible non-main windows such as the reader settings popover; SwiftUI text is mostly not exposed, so prefer the snapshot), `snap-popover:<png>` (captures the first such window), `hover:<x>,<y>` (mouseMoved at window point from top-left).
+Env: `FOLIO_DEBUG_NO_JAVA=1` pretends Java is missing (Extensions' install panel). `FOLIO_DEBUG_DELAY=1.5` simulates slow page loads (used to prove load-in stability: every page load left the view still).
 
 ## Status
 - Batch 1 (global search, categories, display modes, filters/sort/random, download queue + delete-after-read, incognito,

@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import FolioCore
 import SwiftUI
 
@@ -48,6 +49,9 @@ final class ReaderModel: ObservableObject {
     @Published var loading = true
     @Published var error: String?
     @Published var mode: ReadingMode
+    /// This comic's reading settings (its own choices over the defaults). Kept current as either changes.
+    @Published private(set) var prefs: ReaderPrefs
+    private var prefsWatch: AnyCancellable?
     @Published var controls = false
     @Published var autoScroll = false
     @Published var toast: String?
@@ -69,6 +73,15 @@ final class ReaderModel: ObservableObject {
     init(app: AppModel, series: Series, chapter: Chapter) {
         self.app = app; self.series = series; self.chapter = chapter
         self.mode = app.library.mode(for: series.id)
+        self.prefs = app.library.readerPrefs(for: series.id)
+        let lib = app.library, id = series.id
+        prefsWatch = lib.$settings.map { _ in () }.merge(with: lib.$entries.map { _ in () })
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] in
+                guard let self else { return }
+                let p = lib.readerPrefs(for: id)
+                if p != self.prefs { self.prefs = p }
+            }
         if app.library.settings.keepAwake {
             activity = ProcessInfo.processInfo.beginActivity(options: [.idleDisplaySleepDisabled, .userInitiated], reason: "Reading")
         }
@@ -142,11 +155,11 @@ final class ReaderModel: ObservableObject {
         var out: [ReaderItem] = []
         for c in stream {
             let ps = pagesByChapter[c.url] ?? []
-            out.append(ReaderItem(id: "d|\(c.url)", kind: .divider(c)))
+            if c != stream.first { out.append(ReaderItem(id: "d|\(c.url)", kind: .divider(c))) }
             for (i, p) in ps.enumerated() { out.append(ReaderItem(id: Self.pageID(c, i), kind: .page(c, p, i, ps.count))) }
             // An end card only where the strip really ends (last chapter, or continuous scrolling is off).
             let next = library.next(after: c.url, in: series.id)
-            if c == stream.last, next == nil || !library.settings.seamlessChapters {
+            if c == stream.last, next == nil || !prefs.seamlessChapters {
                 out.append(ReaderItem(id: "t|\(c.url)", kind: .transition(c, next)))
             }
         }
@@ -168,7 +181,7 @@ final class ReaderModel: ObservableObject {
     }
 
     func appendNextIfNeeded() async {
-        guard mode == .webtoon, library.settings.seamlessChapters, !appendingNext,
+        guard mode == .webtoon, prefs.seamlessChapters, !appendingNext,
               let last = stream.last, let n = library.next(after: last.url, in: series.id) else { return }
         appendingNext = true
         defer { appendingNext = false }
@@ -183,7 +196,7 @@ final class ReaderModel: ObservableObject {
 
     /// Webtoon: quietly attach the previous chapter above; the canvas compensates the scroll offset.
     func prependPreviousIfNeeded() async {
-        guard mode == .webtoon, library.settings.seamlessChapters, !prependingPrev,
+        guard mode == .webtoon, prefs.seamlessChapters, !prependingPrev,
               let first = stream.first, let p = library.previous(before: first.url, in: series.id) else { return }
         prependingPrev = true
         defer { prependingPrev = false }
@@ -315,8 +328,8 @@ final class ReaderModel: ObservableObject {
 
     // MARK: spreads and split pages (paged modes)
 
-    var doubleOn: Bool { mode != .webtoon && library.settings.doublePage }
-    var splitting: Bool { mode != .webtoon && !doubleOn && library.settings.splitWidePages }
+    var doubleOn: Bool { mode != .webtoon && prefs.doublePage }
+    var splitting: Bool { mode != .webtoon && !doubleOn && prefs.splitWidePages }
 
     func isWide(_ i: Int) -> Bool {
         guard pages.indices.contains(i), let a = Images.shared.aspect(Images.key(pages[i])) else { return false }
@@ -324,7 +337,7 @@ final class ReaderModel: ObservableObject {
     }
 
     var spreadLayout: [[Int]] {
-        PageSpreads.layout(count: pages.count, isWide: { [self] in isWide($0) }, firstAlone: library.settings.doubleFirstAlone)
+        PageSpreads.layout(count: pages.count, isWide: { [self] in isWide($0) }, firstAlone: prefs.doubleFirstAlone)
     }
 
     /// Page indices on screen right now: one page, or two in double-page mode.
@@ -498,475 +511,5 @@ final class ReaderModel: ObservableObject {
         NSCursor.unhide()
         if let m = mouseMonitor { NSEvent.removeMonitor(m); mouseMonitor = nil }
         if animated { app.closeReader() }
-    }
-}
-
-// MARK: - View
-
-extension ReaderBackground {
-    var color: Color {
-        switch self { case .black: .black; case .gray: Color(white: 0.16); case .white: Color(white: 0.97); case .auto: Theme.bg }
-    }
-    var ink: Color { self == .white ? .black : (self == .auto ? Theme.ink : .white) }
-}
-
-struct ReaderView: View {
-    @ObservedObject var model: ReaderModel
-    @ObservedObject var library: Library
-    @FocusState private var focused: Bool
-    @State private var fullscreen = false
-
-    init(model: ReaderModel) { self.model = model; self.library = model.app.library }
-
-    var bg: ReaderBackground { library.settings.readerBackground }
-
-    var body: some View {
-        ZStack {
-            bg.color.ignoresSafeArea()
-            content
-            if model.controls && !model.loading {
-                VStack(spacing: 0) {
-                    ReaderTopBar(model: model, library: library, fullscreen: fullscreen)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    Spacer()
-                    ReaderBottomBar(model: model)
-                        .transition(.move(edge: .bottom).combined(with: .opacity))
-                }
-            }
-            if !model.controls && !model.loading && library.settings.showPageNumber && !model.pages.isEmpty {
-                VStack { Spacer(); HStack { Spacer(); PageNumberPill(model: model) } }.allowsHitTesting(false)
-            }
-            if let t = model.toast {
-                VStack {
-                    Text(t).font(.system(size: 12.5, weight: .medium)).foregroundStyle(.white).padding(.horizontal, 15).padding(.vertical, 7)
-                        .background(Color.black.opacity(0.88), in: Capsule())
-                        .overlay(Capsule().strokeBorder(Color.white.opacity(0.14)))
-                        .padding(.top, model.controls ? 70 : 22)
-                    Spacer()
-                }
-                .transition(.opacity.combined(with: .scale(scale: 0.9)))
-                .allowsHitTesting(false)
-            }
-        }
-        .ignoresSafeArea()      // the titlebar/menu bar sliding in and out must never push the controls around
-        .focusable()
-        .focusEffectDisabled()
-        .focused($focused)
-        .onAppear { focused = true; model.installMouseMonitor() }
-        .onChange(of: model.popover) { _, p in if p == nil { focused = true } }
-        .onChange(of: model.controls) { _, _ in if model.popover == nil { focused = true } }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEnterFullScreenNotification)) { _ in fullscreen = true }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didExitFullScreenNotification)) { _ in fullscreen = false }
-        .onKeyPress(phases: [.down, .repeat]) { press in handle(press) }
-    }
-
-    @ViewBuilder var content: some View {
-        if model.loading {
-            VStack(spacing: 14) {
-                ProgressView().controlSize(.large).tint(bg.ink)
-                Text(model.chapter.name).font(.callout).foregroundStyle(bg.ink.opacity(0.6))
-            }
-        } else if let e = model.error {
-            VStack(spacing: 14) {
-                Image(systemName: "exclamationmark.triangle").font(.system(size: 36))
-                Text(e).multilineTextAlignment(.center).frame(maxWidth: 420)
-                HStack {
-                    Button("Back") { model.close() }.buttonStyle(.mono)
-                    Button("Retry") { model.retry() }.buttonStyle(.monoPrimary)
-                }
-            }
-            .foregroundStyle(bg.ink)
-        } else if let source = model.source {
-            let st = library.settings
-            switch model.mode {
-            case .webtoon:
-                WebtoonStrip(model: model, source: source,
-                             look: ReaderLook(widthFraction: st.webtoonWidth, gap: st.pageGap,
-                                              background: st.readerBackground, autoScrollSpeed: st.autoScrollSpeed))
-                    .ignoresSafeArea()
-            case .leftToRight, .rightToLeft:
-                PagedCanvas(model: model, source: source, background: st.readerBackground).ignoresSafeArea()
-            }
-        }
-    }
-
-    func handle(_ press: KeyPress) -> KeyPress.Result {
-        let webtoon = model.mode == .webtoon
-        let rtl = model.mode == .rightToLeft
-        let shift = press.modifiers.contains(.shift)
-        if press.modifiers.contains(.command) {
-            switch press.characters {
-            case "=", "+": model.zoomIn()
-            case "-", "_": model.zoomOut()
-            case "0": model.resetZoom()
-            default: return .ignored
-            }
-            return .handled
-        }
-        switch press.key {
-        case .escape:
-            if model.popover != nil { model.popover = nil }
-            else if fullscreen { NSApp.keyWindow?.toggleFullScreen(nil) }
-            else { model.close() }
-        case .downArrow: webtoon ? model.scroll(.byPoints(160)) : model.forward()
-        case .upArrow: webtoon ? model.scroll(.byPoints(-160)) : model.back()
-        case .space: webtoon ? model.scroll(.byViewport(shift ? -0.85 : 0.85)) : (shift ? model.back() : model.forward())
-        case .pageDown: webtoon ? model.scroll(.byViewport(0.9)) : model.forward()
-        case .pageUp: webtoon ? model.scroll(.byViewport(-0.9)) : model.back()
-        case .rightArrow: webtoon ? model.scroll(.byViewport(0.85)) : (rtl ? model.back() : model.forward())
-        case .leftArrow: webtoon ? model.scroll(.byViewport(-0.85)) : (rtl ? model.forward() : model.back())
-        case .home: model.setIndex(0)
-        case .end: model.setIndex(model.pages.count - 1)
-        default:
-            switch press.characters.lowercased() {
-            case "j": webtoon ? model.scroll(.byPoints(160)) : model.forward()
-            case "k": webtoon ? model.scroll(.byPoints(-160)) : model.back()
-            case "]", "n": model.goNext()
-            case "[", "p": model.goPrevious()
-            case "a": model.toggleAutoScroll()
-            case "m": model.toggleControls()
-            case "f": NSApp.keyWindow?.toggleFullScreen(nil)
-            case "b": model.toggleBookmark()
-            case "c": model.popover = model.popover == .chapters ? nil : .chapters
-            case "=", "+": model.zoomIn()
-            case "-", "_": model.zoomOut()
-            case "0": model.resetZoom()
-            case "1": model.setMode(.webtoon)
-            case "2": model.setMode(.rightToLeft)
-            case "3": model.setMode(.leftToRight)
-            default: return .ignored
-            }
-        }
-        return .handled
-    }
-}
-
-// MARK: - Webtoon pieces (hosted inside the native strip)
-
-struct ChapterDivider: View {
-    let chapter: Chapter
-    let ink: Color
-    var body: some View {
-        HStack(spacing: 12) {
-            Rectangle().fill(ink.opacity(0.14)).frame(height: 1)
-            Text(chapter.name).font(.system(size: 11.5, weight: .medium)).foregroundStyle(ink.opacity(0.5)).lineLimit(1).fixedSize()
-            Rectangle().fill(ink.opacity(0.14)).frame(height: 1)
-        }
-        .padding(.horizontal, 8)
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-struct TransitionCard: View {
-    @ObservedObject var model: ReaderModel
-    let from: Chapter
-    let to: Chapter?
-    let ink: Color
-
-    var body: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 3) {
-                Text("FINISHED").font(.caption2.weight(.bold)).tracking(1.5).foregroundStyle(ink.opacity(0.5))
-                Text(from.name).font(.headline).foregroundStyle(ink.opacity(0.85)).multilineTextAlignment(.center)
-            }
-            if let to {
-                Image(systemName: "chevron.compact.down").font(.title2).foregroundStyle(ink.opacity(0.35))
-                VStack(spacing: 3) {
-                    Text("NEXT").font(.caption2.weight(.bold)).tracking(1.5).foregroundStyle(ink.opacity(0.5))
-                    Text(to.name).font(.title3.weight(.semibold)).foregroundStyle(ink).multilineTextAlignment(.center)
-                }
-                if model.appendingNext { ProgressView().controlSize(.small).tint(ink) }
-                else if !model.app.library.settings.seamlessChapters || model.mode != .webtoon {
-                    Button("Continue") { model.goNext() }.buttonStyle(.monoPrimary)
-                }
-            } else {
-                Image(systemName: "checkmark.circle").font(.system(size: 34, weight: .light)).foregroundStyle(ink.opacity(0.8))
-                Text("You're all caught up").font(.title3.weight(.semibold)).foregroundStyle(ink)
-                Button("Back to \(model.series.title)") { model.close() }.buttonStyle(.mono)
-            }
-        }
-        .padding(28)
-        .frame(maxWidth: .infinity)
-        .background(ink.opacity(0.05), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(ink.opacity(0.1)))
-    }
-}
-
-// MARK: - Chrome
-
-struct BarButton: View {
-    let icon: String
-    let help: String
-    var active = false
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            Image(systemName: icon).font(.system(size: 13, weight: .medium))
-                .frame(width: 32, height: 32)
-                .foregroundStyle(active ? Color.black : Color.white)
-                .background(active ? Color.white : Color.white.opacity(0.1), in: Circle())
-        }
-        .buttonStyle(.plain)
-        .help(help)
-    }
-}
-
-struct ReaderTopBar: View {
-    @ObservedObject var model: ReaderModel
-    @ObservedObject var library: Library
-    let fullscreen: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            // Where you are
-            HStack(spacing: 12) {
-                Button { model.close() } label: { Image(systemName: "chevron.left").font(.system(size: 14, weight: .medium)) }
-                    .buttonStyle(.plain).help("Back (Esc)")
-                Button { model.popover = .chapters } label: {
-                    HStack(spacing: 8) {
-                        Text(model.series.title).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-                        Text(model.chapter.name).font(.system(size: 11.5, design: .monospaced)).opacity(0.6).lineLimit(1)
-                    }
-                }
-                .buttonStyle(.plain).help("All chapters (C)")
-                .popover(isPresented: Binding(get: { model.popover == .chapters }, set: { if !$0 { model.popover = nil } }), arrowEdge: .bottom) {
-                    ChapterPicker(model: model, library: library)
-                }
-            }
-            .padding(.horizontal, 14).padding(.vertical, 8)
-            .background(Color.black.opacity(0.88), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
-            Spacer(minLength: 20)
-            // Tools
-            HStack(spacing: 16) {
-                if model.mode == .webtoon {
-                    Button { model.toggleAutoScroll() } label: { Image(systemName: model.autoScroll ? "pause.fill" : "play.fill").font(.system(size: 14)) }
-                        .buttonStyle(.plain).help("Auto-scroll (A)")
-                }
-                Button { model.toggleBookmark() } label: { Image(systemName: model.bookmarked ? "bookmark.fill" : "bookmark").font(.system(size: 14)) }
-                    .buttonStyle(.plain).help("Bookmark chapter (B)")
-                Button { model.popover = .settings } label: { Image(systemName: "slider.horizontal.3").font(.system(size: 14)) }
-                    .buttonStyle(.plain).help("Reader settings")
-                    .popover(isPresented: Binding(get: { model.popover == .settings }, set: { if !$0 { model.popover = nil } }), arrowEdge: .bottom) {
-                        ReaderSettings(model: model, library: library)
-                    }
-                Button { NSApp.keyWindow?.toggleFullScreen(nil) } label: {
-                    Image(systemName: fullscreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right").font(.system(size: 14))
-                }
-                    .buttonStyle(.plain).help("Full screen (F)")
-            }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(Color.black.opacity(0.88), in: Capsule())
-            .overlay(Capsule().strokeBorder(Color.white.opacity(0.12)))
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 16)
-        .padding(.top, fullscreen ? 12 : 44)       // below the window's own title bar (traffic lights), not sharing it
-        .environment(\.colorScheme, .dark)
-        .onHover { model.hoveringBars = $0 }
-    }
-}
-
-/// Page scrubber: one notch per page, a thin thumb that tracks the scroll position continuously,
-/// and dragging that moves the page under your finger rather than stepping.
-struct PageScrubber: View {
-    @ObservedObject var model: ReaderModel
-    @ObservedObject var scrub: ScrubState
-    @State private var dragging = false
-
-    var body: some View {
-        GeometryReader { g in
-            let n = max(2, model.pages.count)
-            let w = max(1, g.size.width)
-            let rtl = model.mode == .rightToLeft
-            let f = min(1, max(0, scrub.position / Double(n - 1)))
-            let x = (rtl ? 1 - f : f) * w
-            ZStack(alignment: .leading) {
-                Canvas { ctx, size in
-                    let step = size.width / CGFloat(n - 1)
-                    let every = max(1, Int(ceil(5 / step)))                 // notches never closer than 5 pt
-                    for k in stride(from: 0, to: n, by: every) {
-                        let major = k % 10 == 0 || k == n - 1
-                        let h: CGFloat = major ? 10 : 5
-                        let kx = (rtl ? size.width - CGFloat(k) * step : CGFloat(k) * step)
-                        let passed = Double(k) <= scrub.position + 0.001
-                        ctx.fill(Path(CGRect(x: kx - 0.5, y: (size.height - h) / 2, width: 1, height: h)),
-                                 with: .color(.white.opacity(passed ? 0.9 : 0.26)))
-                    }
-                }
-                Capsule().fill(Color.white).frame(width: 3, height: 18).offset(x: x - 1.5)
-                    .animation(model.mode == .webtoon ? nil : .easeOut(duration: 0.12), value: scrub.position)
-                if dragging {
-                    Text("\(Int(scrub.position.rounded()) + 1)").font(.system(size: 11, weight: .bold, design: .monospaced))
-                        .padding(.horizontal, 6).padding(.vertical, 2).background(Color.white, in: RoundedRectangle(cornerRadius: 3))
-                        .foregroundStyle(.black).offset(x: min(max(0, x - 14), w - 28), y: -22)
-                }
-            }
-            .contentShape(Rectangle())
-            .gesture(DragGesture(minimumDistance: 0)
-                .onChanged { v in
-                    dragging = true; scrub.dragging = true
-                    var t = min(1, max(0, v.location.x / w)); if rtl { t = 1 - t }
-                    if model.mode == .webtoon {
-                        scrub.position = t * Double(n - 1)
-                        model.scrubHandler?(scrub.position)
-                    } else {
-                        let i = Int((t * Double(n - 1)).rounded())
-                        if i != model.index { model.setIndex(i) }
-                    }
-                }
-                .onEnded { _ in dragging = false; scrub.dragging = false })
-        }
-        .frame(height: 24)
-    }
-}
-
-struct ReaderBottomBar: View {
-    @ObservedObject var model: ReaderModel
-
-    var body: some View {
-        HStack(spacing: 14) {
-            Button { model.goPrevious() } label: { Image(systemName: "backward.end").font(.system(size: 14)) }
-                .buttonStyle(.plain).disabled(model.previousChapter == nil).opacity(model.previousChapter == nil ? 0.3 : 1).help("Previous chapter ([)")
-            Text("\(model.index + 1)").font(.system(size: 12, weight: .semibold, design: .monospaced)).frame(minWidth: 24, alignment: .trailing)
-            if model.pages.count > 1 {
-                PageScrubber(model: model, scrub: model.scrub)
-            } else { Spacer() }
-            Text("\(model.pages.count)").font(.system(size: 12, design: .monospaced)).opacity(0.5).frame(minWidth: 24, alignment: .leading)
-            Button { model.goNext() } label: { Image(systemName: "forward.end").font(.system(size: 14)) }
-                .buttonStyle(.plain).disabled(model.nextChapter == nil).opacity(model.nextChapter == nil ? 0.3 : 1).help("Next chapter (])")
-            if abs(model.zoom - 1) > 0.01 {
-                Button { model.resetZoom() } label: {
-                    Text("\(Int((model.zoom * 100).rounded()))% ✕").font(.system(size: 11, weight: .semibold, design: .monospaced))
-                }
-                .buttonStyle(.plain).help("Reset zoom (⌘0)")
-            }
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 18).padding(.vertical, 9)
-        .background(Color.black.opacity(0.88), in: Capsule())
-        .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
-        .frame(maxWidth: 560)
-        .padding(.horizontal, 24).padding(.bottom, 18)
-        .environment(\.colorScheme, .dark)
-        .onHover { model.hoveringBars = $0 }
-    }
-}
-
-struct ChapterPicker: View {
-    @ObservedObject var model: ReaderModel
-    @ObservedObject var library: Library
-
-    var body: some View {
-        let chapters = (library.entry(model.series.id)?.ordered ?? []).reversed()
-        ScrollViewReader { proxy in
-            List(Array(chapters)) { c in
-                Button { model.jump(to: c.chapter) } label: {
-                    HStack(spacing: 10) {
-                        Circle().fill(c.read ? Color.clear : Theme.ink).frame(width: 6, height: 6)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(c.chapter.name).fontWeight(c.chapter.url == model.chapter.url ? .bold : .regular)
-                                .foregroundStyle(c.read && c.chapter.url != model.chapter.url ? .secondary : .primary)
-                            if c.started { Text("Page \(c.lastPage + 1)\(c.pageCount.map { " of \($0)" } ?? "")").font(.caption).foregroundStyle(.tertiary) }
-                        }
-                        Spacer()
-                        if c.bookmarked { Image(systemName: "bookmark.fill").foregroundStyle(Theme.ink) }
-                        if c.downloaded { Image(systemName: "arrow.down.circle.fill").foregroundStyle(.secondary) }
-                        if c.chapter.url == model.chapter.url { Image(systemName: "book.fill").foregroundStyle(Theme.ink) }
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .id(c.chapter.url)
-            }
-            .onAppear { proxy.scrollTo(model.chapter.url, anchor: .center) }
-        }
-        .frame(width: 340, height: 460)
-    }
-}
-
-struct ReaderSettings: View {
-    @ObservedObject var model: ReaderModel
-    @ObservedObject var library: Library
-    @State private var showShortcuts = false
-
-    var body: some View {
-        Group {
-            if showShortcuts { shortcuts } else { panel }
-        }
-        .padding(.horizontal, 18).padding(.vertical, 8)
-        .frame(width: 360)
-        .frame(maxHeight: 560)
-        .background(Theme.bg)
-    }
-
-    var panel: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                SetRow(label: "Reading mode") {
-                    MonoChoice(options: ReadingMode.allCases.map { ($0, $0.label) }, selection: Binding(get: { model.mode }, set: { model.setMode($0) }))
-                }
-                if library.settings.defaultMode != model.mode {
-                    HStack { Spacer(); TextAction(title: "use for all series") { library.settings.defaultMode = model.mode } }.padding(.top, 6)
-                }
-                if model.mode == .webtoon {
-                    SetRow(label: "Width") {
-                        HStack(spacing: 10) {
-                            Slider(value: $library.settings.webtoonWidth, in: 0.3...1).controlSize(.small).frame(width: 130)
-                            Text("\(Int(library.settings.webtoonWidth * 100))%").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim).frame(width: 36, alignment: .trailing)
-                        }
-                    }
-                    SetRow(label: "Gap between pages") {
-                        MonoChoice(options: [(0.0, "none"), (8.0, "small"), (24.0, "large")], selection: $library.settings.pageGap)
-                    }
-                    SetRow(label: "Auto-scroll speed") { Slider(value: $library.settings.autoScrollSpeed, in: 30...600).controlSize(.small).frame(width: 150) }
-                    SetRow(label: "Continuous scrolling between chapters") { MonoSwitch(isOn: $library.settings.seamlessChapters) }
-                } else {
-                    SetRow(label: "Tap zones") { MonoChoice(options: TapZones.allCases.map { ($0, $0.label) }, selection: $library.settings.tapZones) }
-                    SetRow(label: "Swap back and forward") { MonoSwitch(isOn: $library.settings.invertTapZones) }
-                    SetRow(label: "Two pages at a time") { MonoSwitch(isOn: $library.settings.doublePage) }
-                    if library.settings.doublePage {
-                        SetRow(label: "First page alone (cover)") { MonoSwitch(isOn: $library.settings.doubleFirstAlone) }
-                    } else {
-                        SetRow(label: "Split wide pages in two") { MonoSwitch(isOn: $library.settings.splitWidePages) }
-                    }
-                    SetRow(label: "Crop white and black margins") { MonoSwitch(isOn: $library.settings.cropBorders) }
-                }
-                SetRow(label: "Skip chapters already read") { MonoSwitch(isOn: $library.settings.skipReadChapters) }
-                SetRow(label: "Background") {
-                    MonoChoice(options: [(ReaderBackground.black, "black"), (.gray, "gray"), (.white, "white"), (.auto, "auto")], selection: $library.settings.readerBackground)
-                }
-                SetRow(label: "Show page number") { MonoSwitch(isOn: $library.settings.showPageNumber) }
-                SetRow(label: "Keep screen awake") { MonoSwitch(isOn: $library.settings.keepAwake) }
-                HStack { TextAction(title: "keyboard shortcuts") { showShortcuts = true }; Spacer() }.padding(.vertical, 12)
-            }
-        }
-    }
-
-    var shortcuts: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack { TextAction(title: "← back") { showShortcuts = false }; Spacer() }.padding(.vertical, 8)
-            ForEach([("Space / ↓ ↑", "scroll"), ("[ ]", "previous / next chapter"), ("A", "auto-scroll"), ("+ − 0", "zoom, reset"),
-                     ("pinch · double-click", "zoom"), ("C", "chapters"), ("B", "bookmark"), ("F", "full screen"), ("M", "show controls"),
-                     ("right-click a page", "copy, save, share, use as cover"), ("Esc", "back")], id: \.0) { k, d in
-                HStack(alignment: .firstTextBaseline) {
-                    Text(k).font(.system(size: 12, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink)
-                    Spacer(minLength: 12)
-                    Text(d).font(.system(size: 12)).foregroundStyle(Theme.dim)
-                }
-                .padding(.vertical, 7).overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
-            }
-        }
-    }
-}
-
-/// Opt-in (Reader settings › Show page number): just the number, nothing else.
-struct PageNumberPill: View {
-    @ObservedObject var model: ReaderModel
-    var body: some View {
-        Text("\(model.index + 1) / \(model.pages.count)").font(.caption.monospacedDigit().weight(.medium))
-            .padding(.horizontal, 9).padding(.vertical, 4)
-            .background(Color.black.opacity(0.6), in: Capsule()).foregroundStyle(.white.opacity(0.85))
-            .padding(12)
     }
 }

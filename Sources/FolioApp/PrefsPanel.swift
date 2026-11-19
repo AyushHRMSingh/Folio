@@ -14,12 +14,12 @@ struct PrefsPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 if !loaded {
-                    HStack { ProgressView().controlSize(.small); Text("Loading…").foregroundStyle(Theme.dim) }.padding(.top, 24)
+                    HStack { ProgressView().controlSize(.small); Text("Loading…").font(.folioMeta).foregroundStyle(Theme.dim) }.padding(.top, 24)
                 } else if prefs.isEmpty {
-                    Text("This source has no settings.").font(.system(size: 12.5)).foregroundStyle(Theme.dim).padding(.top, 24)
+                    Text("This source has no settings.").font(.folioBody).foregroundStyle(Theme.dim).padding(.top, 24)
                 }
                 ForEach(prefs) { p in row(p) }
-                if let failure { Text(failure).font(.system(size: 11.5)).foregroundStyle(Theme.dim).padding(.top, 12) }
+                if let failure { Text(failure).font(.folioMeta).foregroundStyle(Theme.dim).padding(.top, 12) }
             }
             .padding(.horizontal, 18).padding(.bottom, 14)
         }
@@ -54,6 +54,10 @@ struct PrefsPanel: View {
             .opacity(p.enabled ? 1 : 0.4).disabled(!p.enabled)
         case .list(let entries, let values, let cur):
             SetRow(label: p.title, hint: p.summary.isEmpty ? nil : p.summary) {
+                if values.count <= 3 {
+                    MonoChoice(options: values.indices.map { (values[$0], entries.indices.contains($0) ? entries[$0] : values[$0]) },
+                               selection: Binding(get: { cur }, set: { var q = p; q.kind = .list(entries: entries, values: values, current: $0); save(q) }))
+                } else {
                 Menu {
                     ForEach(values.indices, id: \.self) { k in
                         Button {
@@ -65,20 +69,21 @@ struct PrefsPanel: View {
                     }
                 } label: {
                     let i = values.firstIndex(of: cur)
-                    HStack(spacing: 5) {
-                        Text(i.flatMap { entries.indices.contains($0) ? entries[$0] : nil } ?? cur).font(.system(size: 12, design: .monospaced)).lineLimit(1)
-                        Text("▾").font(.system(size: 9))
+                    HStack(spacing: 6) {
+                        Text(i.flatMap { entries.indices.contains($0) ? entries[$0] : nil } ?? cur).font(.system(size: 13.5, design: .monospaced)).lineLimit(1)
+                        Text("▾").font(.system(size: 10))
                     }
-                    .foregroundStyle(Theme.ink).padding(.horizontal, 9).padding(.vertical, 4)
+                    .foregroundStyle(Theme.ink).padding(.horizontal, 9).padding(.vertical, 5)
                     .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Theme.line))
                 }
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                }
             }
             .opacity(p.enabled ? 1 : 0.4).disabled(!p.enabled)
         case .multi(let entries, let values, let cur):
-            VStack(alignment: .leading, spacing: 8) {
-                Text(p.title).font(.system(size: 13)).foregroundStyle(Theme.ink)
-                if !p.summary.isEmpty { Text(p.summary).font(.system(size: 11.5)).foregroundStyle(Theme.faint) }
+            VStack(alignment: .leading, spacing: 10) {
+                Text(p.title).font(.folioBody).foregroundStyle(Theme.ink)
+                if !p.summary.isEmpty { Text(p.summary).font(.folioMeta).foregroundStyle(Theme.faint) }
                 FlowLayout(spacing: 6) {
                     ForEach(values.indices, id: \.self) { k in
                         let on = cur.contains(values[k])
@@ -87,9 +92,9 @@ struct PrefsPanel: View {
                             if on { next.removeAll { $0 == values[k] } } else { next.append(values[k]) }
                             var q = p; q.kind = .multi(entries: entries, values: values, current: next); save(q)
                         } label: {
-                            Text(entries.indices.contains(k) ? entries[k] : values[k]).font(.system(size: 12))
+                            Text(entries.indices.contains(k) ? entries[k] : values[k]).font(.system(size: 13.5))
                                 .foregroundStyle(on ? Theme.onInk : Theme.dim)
-                                .padding(.horizontal, 10).padding(.vertical, 5)
+                                .padding(.horizontal, 10).padding(.vertical, 6)
                                 .background(on ? Theme.ink : Color.clear, in: Capsule())
                                 .overlay { if !on { Capsule().strokeBorder(Theme.line) } }
                         }
@@ -97,7 +102,7 @@ struct PrefsPanel: View {
                     }
                 }
             }
-            .padding(.vertical, 12)
+            .padding(.vertical, 16)
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
             .opacity(p.enabled ? 1 : 0.4).disabled(!p.enabled)
         }

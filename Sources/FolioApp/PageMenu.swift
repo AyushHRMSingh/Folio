@@ -29,7 +29,7 @@ enum PageMenu {
 
         func bytes() async -> Data? { try? await source.imageData(page) }
 
-        m.addItem(item("Copy Page", symbol: "doc.on.doc") {
+        m.addItem(item("Copy page", symbol: "doc.on.doc") {
             Task {
                 guard let d = await bytes(), let img = NSImage(data: d) else { return model.show(toast: "Couldn\u{2019}t copy this page") }
                 NSPasteboard.general.clearContents()
@@ -37,7 +37,7 @@ enum PageMenu {
                 model.show(toast: "Copied page \(number)")
             }
         })
-        m.addItem(item("Save Page…", symbol: "square.and.arrow.down") {
+        m.addItem(item("Save page…", symbol: "square.and.arrow.down") {
             Task {
                 guard let d = await bytes() else { return model.show(toast: "Couldn\u{2019}t save this page") }
                 let ext = d.starts(with: [0x89, 0x50]) ? "png" : (d.starts(with: [0xff, 0xd8]) ? "jpg" : (d.starts(with: [0x47, 0x49]) ? "gif" : "webp"))
@@ -56,7 +56,7 @@ enum PageMenu {
             }
         })
         m.addItem(.separator())
-        m.addItem(item("Use as Cover", symbol: "photo") {
+        m.addItem(item("Use as cover", symbol: "photo") {
             Task {
                 guard let d = await bytes(), let img = Images.decode(d, maxWidth: 600),
                       let tiff = img.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
@@ -69,8 +69,10 @@ enum PageMenu {
         })
         if cropToggle {
             m.addItem(.separator())
-            let on = model.app.library.settings.cropBorders
-            let t = item(on ? "Show Margins" : "Crop Margins", symbol: "crop") { model.app.library.settings.cropBorders.toggle() }
+            let on = model.prefs.cropBorders
+            let t = item(on ? "Show margins" : "Crop margins", symbol: "crop") {
+                model.app.library.setReaderPref(model.series.id, \.cropBorders, \.cropBorders, !on)
+            }
             m.addItem(t)
         }
         return m

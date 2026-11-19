@@ -26,7 +26,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.backgroundColor = Theme.nsBg
         window.isRestorable = false
         let host = NSHostingView(rootView: RootView(app: model))
-        host.sizingOptions = []          // the window decides its size, not the content's ideal size
+        // The window decides its size, not the content's ideal size — but the content's minimum (760×520 on
+        // RootView) is enforced, so the window can never be dragged small enough to break the layout.
+        host.sizingOptions = [.minSize]
         window.contentView = host
         window.contentMinSize = NSSize(width: 760, height: 520)
         model.window = window
@@ -51,8 +53,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     if r.popover != nil { r.popover = nil } else { r.close() }
                 } else if !m.path.isEmpty {
                     m.path.removeLast()
-                } else if let cur = m.sidebar, cur == .extensions || { if case .source = cur { true } else { false } }() {
-                    m.sidebar = .sources
                 }
                 return nil
             }
@@ -119,6 +119,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let view = NSMenu(title: "View")
         let fs = view.addItem(withTitle: "Enter Full Screen", action: #selector(NSWindow.toggleFullScreen(_:)), keyEquivalent: "f")
         fs.keyEquivalentModifierMask = [.command, .control]
+        view.insertItem(.separator(), at: 0)
+        func vi(_ t: String, _ a: Selector, _ k: String, _ mods: NSEvent.ModifierFlags, at i: Int) {
+            let m = NSMenuItem(title: t, action: a, keyEquivalent: k)
+            m.keyEquivalentModifierMask = mods; m.target = self
+            view.insertItem(m, at: i)
+        }
+        vi("Show Reader Controls", #selector(menuControls), "m", [], at: 0)
+        vi("Reading Settings…", #selector(menuReadingSettings), "s", [], at: 1)
+        vi("Chapters…", #selector(menuChapters), "c", [], at: 2)
+        view.insertItem(.separator(), at: 3)
+        vi("Zoom In", #selector(menuZoomIn), "=", .command, at: 4)
+        vi("Zoom Out", #selector(menuZoomOut), "-", .command, at: 5)
+        vi("Actual Size", #selector(menuZoomReset), "0", .command, at: 6)
         viewItem.submenu = view
 
         let goItem = NSMenuItem(); main.addItem(goItem)
@@ -143,6 +156,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         helpItem.submenu = help
         NSApp.helpMenu = help
         NSApp.mainMenu = main
+    }
+
+    @objc func menuControls() { model.reader?.toggleControls() }
+    @objc func menuReadingSettings() { model.reader?.popover = .settings }
+    @objc func menuChapters() { model.reader?.popover = .chapters }
+    @objc func menuZoomIn() { model.reader?.zoomIn() }
+    @objc func menuZoomOut() { model.reader?.zoomOut() }
+    @objc func menuZoomReset() { model.reader?.resetZoom() }
+    @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        let readerActions: [Selector] = [#selector(menuControls), #selector(menuReadingSettings), #selector(menuChapters),
+                                         #selector(menuZoomIn), #selector(menuZoomOut), #selector(menuZoomReset)]
+        if let a = item.action, readerActions.contains(a) { return model?.reader != nil }
+        return true
     }
 
     private func go(_ s: SidebarItem) { model.closeReader(); model.sidebar = s; model.path = NavigationPath() }

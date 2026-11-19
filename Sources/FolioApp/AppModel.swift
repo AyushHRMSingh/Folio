@@ -3,8 +3,6 @@ import FolioCore
 import ImageIO
 import SwiftUI
 
-struct WebTarget: Identifiable { let url: URL; let title: String; var id: URL { url } }
-
 enum SidebarItem: Hashable {
     case search, library, recents, sources, extensions, source(String), settings
 }
@@ -22,28 +20,55 @@ final class AppModel: ObservableObject {
         library.pruneReadDownloads()
         autoUpdateOnLaunch()
         autoBackupOnLaunch()
-        ExtensionEngine.shared.flareSolverrURL = library.settings.flareSolverrURL
-        // Bring installed extensions online in the background.
-        // Only if the engine is already on disk: a missing one is downloaded when the user first needs it, never at launch.
-        if !library.settings.extensionSources.isEmpty && ExtensionEngine.shared.isInstalled {
-            Task { [weak self] in
-                guard let self else { return }
+        configureCloudflare()
+        Task { [weak self] in
+            // Folio's own Cloudflare helper (the user verifies in a small window) must be listening before the engine
+            // starts, because the engine is told its address at launch.
+            await CloudflareSolver.shared.start()
+            guard let self else { return }
+            self.configureCloudflare()
+            // Bring installed extensions online in the background.
+            // Only if the engine is already on disk: a missing one is downloaded when the user first needs it, never at launch.
+            if !self.library.settings.extensionSources.isEmpty && ExtensionEngine.shared.isInstalled {
                 do { try await ExtensionEngine.shared.ensureRunning(); try await self.library.syncExtensionSources() }
                 catch { self.report(error) }
             }
         }
     }
+
+    /// Cloudflare checks: an external FlareSolverr if the user set one, otherwise Folio's own helper, which shows
+    /// the check to the user. Takes effect the next time the engine starts.
+    func configureCloudflare() {
+        let e = ExtensionEngine.shared
+        let user = library.settings.flareSolverrURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !user.isEmpty {
+            e.flareSolverrURL = user; e.flareSolverrTimeoutSeconds = 60; e.flareSolverrResponseFallback = true
+        } else if let u = CloudflareSolver.shared.url {
+            e.flareSolverrURL = u; e.flareSolverrTimeoutSeconds = 240; e.flareSolverrResponseFallback = false
+        } else {
+            e.flareSolverrURL = ""
+        }
+    }
     @Published var sidebar: SidebarItem? = .library
     /// Bumped to put the cursor in the library's search field (⌘K).
     @Published var searchFocus = 0
+
+    /// Searches every source (library, local, OPDS, extensions) for `q` and shows the results in the library page.
+    func searchEverywhere(_ q: String) {
+        closeReaderIfOpen()
+        sidebar = .library
+        path = NavigationPath()
+        search.query = q
+        search.run(q, library: library)
+    }
+    private func closeReaderIfOpen() { if reader != nil { reader?.close() } }
     @Published var debugFilterPanel = false      // dev only: lets the QA harness open the filter panel
-    /// A page open in the in-app web view (a source's own site for a series or chapter).
-    @Published var web: WebTarget?
     /// The library series being moved to another source (shows the migrate sheet).
     @Published var migrating: LibraryEntry?
+    /// The one entry point to Folio's in-app web view (separate window, persistent Folio-only website data).
     func openWeb(_ urlString: String?, title: String) {
         guard let u = urlString.flatMap(URL.init(string:)), u.scheme?.hasPrefix("http") == true else { status = "This source didn’t give a web address."; return }
-        web = WebTarget(url: u, title: title)
+        WebWindow.shared.open(u)      // `title` is kept for callers; the window is always "Folio Web"
     }
     @Published var error: String?
     @Published var status: String?
@@ -84,9 +109,8 @@ final class AppModel: ObservableObject {
     private func runScheduledUpdate(atLaunch: Bool) async {
         guard library.updateDue(atLaunch: atLaunch), !updating, !library.updatable().isEmpty else { return }
         updating = true
-        let r = await library.refreshAll(onlyRulesApply: true)
+        let r = await library.runScheduledRefresh()
         updating = false
-        library.settings.lastAutoUpdate = Date()
         if r.new > 0 { status = "\(r.new) new chapter\(r.new == 1 ? "" : "s") in your library." }
     }
 
@@ -119,12 +143,24 @@ final class AppModel: ObservableObject {
         p.allowsMultipleSelection = true
         p.allowedContentTypes = [.folder, .zip, .init(filenameExtension: "cbz") ?? .zip]
         guard p.runModal() == .OK else { return }
-        var n = 0
-        for u in p.urls {
-            do { _ = try library.local.importItem(u); n += 1 } catch { report(error) }
-        }
-        status = "Imported \(n) item\(n == 1 ? "" : "s") into Local files."
+        let urls = p.urls
+        let local = library.local
         sidebar = .source("local")
+        Task {
+            var n = 0
+            for (i, u) in urls.enumerated() {
+                status = "Importing \(i + 1) of \(urls.count)…"
+                let r = await Task.detached(priority: .userInitiated) { () -> Result<String, Error> in
+                    Result { try local.importItem(u) }
+                }.value
+                switch r {
+                case .success: n += 1
+                case .failure(let e): report(e)
+                }
+            }
+            status = "Imported \(n) item\(n == 1 ? "" : "s") into Local files."
+            sidebar = .source("local")
+        }
     }
 
     // MARK: reader (shown inside the main window)
@@ -194,6 +230,25 @@ final class Images {
     }
 
     func cached(_ key: String) -> NSImage? { cache.object(forKey: key as NSString) }
+
+    /// Why the last load of `key` failed, in words a reader understands (nil = no failure recorded).
+    private(set) var failures: [String: String] = [:]
+    func failure(_ key: String) -> String? { failures[key] }
+
+    static func reason(_ e: Error) -> String {
+        if e is CloudflareError { return "Cloudflare check needed. Click to verify." }
+        if let u = e as? URLError {
+            switch u.code {
+            case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed: return "No internet connection. Click to retry."
+            case .timedOut: return "The site took too long. Click to retry."
+            case .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost: return "Can\u{2019}t reach the site. Click to retry."
+            default: break
+            }
+        }
+        let m = (e as? LocalizedError)?.errorDescription ?? "\(e)"
+        if let r = m.range(of: #"HTTP \d{3}"#, options: .regularExpression) { return "The site returned an error (\(m[r])). Click to retry." }
+        return "Couldn\u{2019}t load this page. Click to retry."
+    }
     /// width / height of pages we've decoded before (kept even if the image is evicted).
     private var aspects: [String: CGFloat] = [:]
     func aspect(_ key: String) -> CGFloat? { aspects[key] }
@@ -253,7 +308,9 @@ final class Images {
         } else {
             let e = Load(priority)
             e.task = Task { [weak self, weak e] in
-                let d = try? await FetchPriority.$current.withValue(priority) { try await load() }
+                var d: Data?
+                do { d = try await FetchPriority.$current.withValue(priority) { try await load() }; self?.failures[key] = nil }
+                catch { if !Task.isCancelled { self?.failures[key] = Images.reason(error) } }
                 var img: NSImage?
                 if let d, !Task.isCancelled {
                     img = await Task.detached(priority: .userInitiated) { Images.decode(d, maxWidth: maxWidth) }.value

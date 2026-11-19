@@ -20,22 +20,26 @@ struct MigrateSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: 6) {
-                Button { app.migrating = nil } label: { Text("← cancel").font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim) }
-                    .buttonStyle(.plain)
-                Text("Migrate").font(.system(size: 30, weight: .light)).tracking(-1).foregroundStyle(Theme.ink)
-                Text("Move \u{201C}\(entry.series.title)\u{201D} to another source. Read chapters, bookmarks and progress carry over.")
-                    .font(.system(size: 12.5)).foregroundStyle(Theme.dim)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Eyebrow("Migrate")
+                    Spacer()
+                    Button("Cancel") { app.migrating = nil }.buttonStyle(.mono).keyboardShortcut(.cancelAction)
+                }
+                Text(entry.series.title).font(.system(size: 24, weight: .light)).tracking(-0.5).foregroundStyle(Theme.ink).lineLimit(1).padding(.top, 4)
+                Text("Read chapters, bookmarks and progress carry over.")
+                    .font(.system(size: 14)).foregroundStyle(Theme.dim)
             }
             .padding(.horizontal, 24).padding(.top, 20).padding(.bottom, 14)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 12) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Theme.faint)
-                TextField("Search every source", text: $query).textFieldStyle(.plain).font(.system(size: 15)).foregroundStyle(Theme.ink)
+                MonoField(placeholder: "Search every source", text: $query, width: 440)
                     .focused($focused).onSubmit { search.run(query, library: library) }
                 if search.searching { ProgressView().controlSize(.small) }
             }
-            .padding(.horizontal, 24).padding(.vertical, 10)
+            .padding(.horizontal, 24).padding(.vertical, 13)
+            .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
             .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1) }
 
             ScrollView {
@@ -45,21 +49,21 @@ struct MigrateSheet: View {
                         ForEach(g.series.prefix(8)) { s in row(s, groupSource: g.id) }
                     }
                     if search.groups.isEmpty {
-                        Text("Press return to search.").font(.system(size: 12.5)).foregroundStyle(Theme.faint).padding(24)
+                        Text("Press return to search.").font(.system(size: 14)).foregroundStyle(Theme.faint).padding(24)
                     } else if !search.searching && search.groups.allSatisfy({ $0.series.isEmpty }) {
-                        Text("No matches. Try a shorter title.").font(.system(size: 12.5)).foregroundStyle(Theme.faint).padding(24)
+                        Text("No matches. Try a shorter title.").font(.system(size: 14)).foregroundStyle(Theme.faint).padding(24)
                     }
                 }
             }
 
-            HStack(spacing: 14) {
-                HStack(spacing: 8) { MonoSwitch(isOn: $keepOriginal); Text("keep the original too").font(.system(size: 12)).foregroundStyle(Theme.dim) }
+            HStack(spacing: 18) {
+                HStack(spacing: 10) { MonoSwitch(isOn: $keepOriginal); Text("keep the original too").font(.system(size: 13.5)).foregroundStyle(Theme.dim) }
                 Spacer()
                 if working { ProgressView().controlSize(.small) }
                 Button(picked.map { "Migrate to \(sourceName($0))" } ?? "Pick a match") { go() }
                     .buttonStyle(.monoLargePrimary).disabled(picked == nil || working)
             }
-            .padding(.horizontal, 24).padding(.vertical, 14)
+            .padding(.horizontal, 24).padding(.vertical, 18)
             .overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
         }
         .frame(width: 620, height: 640)
@@ -73,16 +77,17 @@ struct MigrateSheet: View {
         let on = picked?.id == s.id
         let same = s.id == entry.id
         return Button { if !same { picked = s } } label: {
-            HStack(spacing: 12) {
+            HStack(spacing: 15) {
                 CoverView(series: s, source: library.source(s.sourceID)).frame(width: 36, height: 52)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(s.title).font(.system(size: 13, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
-                    Text(same ? "current source" : (s.author ?? "")).font(.system(size: 11.5)).foregroundStyle(Theme.faint).lineLimit(1)
+                    Text(s.title).font(.system(size: 14.5, weight: .medium)).foregroundStyle(Theme.ink).lineLimit(1)
+                    Text(same ? "current source" : (s.author ?? "")).font(.system(size: 13)).foregroundStyle(Theme.faint).lineLimit(1)
                 }
                 Spacer()
-                if on { Text("✓").font(.system(size: 14, weight: .bold, design: .monospaced)).foregroundStyle(Theme.ink) }
+                if on { Text("✓").font(.system(size: 15.5, weight: .bold, design: .monospaced)).foregroundStyle(Theme.ink) }
             }
-            .padding(.horizontal, 24).padding(.vertical, 7)
+            .padding(.horizontal, 24).padding(.vertical, 9)
+            .overlay(alignment: .bottom) { Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, 24) }
             .background(on ? Theme.surface : Color.clear)
             .opacity(same ? 0.4 : 1)
             .contentShape(Rectangle())

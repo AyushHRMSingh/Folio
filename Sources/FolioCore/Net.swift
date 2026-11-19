@@ -135,7 +135,7 @@ public struct CloudflareError: LocalizedError, Sendable {
     public var detail: String
     public init(_ detail: String = "") { self.detail = detail }
     public var errorDescription: String? {
-        "This source is behind a Cloudflare check. Set a FlareSolverr address in Settings → Network to pass it, or try again later."
+        "This site is asking for a Cloudflare check. Complete it in the Verify window Folio opens, then retry."
             + (detail.isEmpty ? "" : " (\(detail))")
     }
 
@@ -166,9 +166,11 @@ public enum Net {
                 let (d, r) = try await session.data(for: request)
                 guard let h = r as? HTTPURLResponse else { return (d, HTTPURLResponse()) }
                 if h.value(forHTTPHeaderField: "cf-mitigated") == "challenge" { throw CloudflareError("HTTP \(h.statusCode)") }
-                if retryableStatus.contains(h.statusCode), n < attempts - 1 {
-                    if (h.statusCode == 503 || h.statusCode == 403),
-                       CloudflareError.matches(String(decoding: d.prefix(2048), as: UTF8.self)) { throw CloudflareError("HTTP \(h.statusCode)") }
+                if retryableStatus.contains(h.statusCode) || h.statusCode == 403, n < attempts - 1 {
+                    // A Cloudflare block never clears by itself on retry: report it at once (the engine sends 500 with
+                    // "Cloudflare bypass currently disabled"; sites send 403/503 challenge pages).
+                    if CloudflareError.matches(String(decoding: d.prefix(4096), as: UTF8.self)) { throw CloudflareError("HTTP \(h.statusCode)") }
+                    if h.statusCode == 403 { return (d, h) }
                     last = URLError(.badServerResponse)
                     try await backoff(n, retryAfter: h.value(forHTTPHeaderField: "Retry-After"))
                     continue

@@ -1,7 +1,7 @@
 # Folio — instructions for worker sessions
 
 Read this file and `CLAUDE.md` before touching code. This file replaces the old audit files
-(`UX_ISSUES.md`, `AUDIT-WAVE2.md`, both in git history at commit `6970de4` if you need the original detail).
+(`UX_ISSUES.md`, `AUDIT-WAVE2.md`, both removed; recover them from git history if needed).
 Keep it current: when you finish or change an item, update its row in **Status** at the bottom.
 
 ---
@@ -70,6 +70,11 @@ Mac first; iPad/iPhone is parked (`PORTING.md`). Feature ideas live in `FEATURES
 - [ ] **U3** Paged right-to-left: mirror the whole bottom bar (counter, scrubber, prev/next) consistently.
 - [ ] **E2** No Java: a clear panel on the Extensions page ("Extensions need Java 21" + button to the Temurin 21
       installer + "Check again"). Later: download a pinned, SHA-verified JRE like the jar.
+- [ ] **Extensions disclaimer (owner request).** Before the first extension repo can be added, show a one-time
+      notice the user must accept: they alone are responsible for any content they add, import or read through
+      Folio; Folio ships no content and no repos; Folio does not condone reading copyrighted material without paying
+      for it — support the creators and official releases. Store the acceptance (with date) in settings; show the
+      same text again in Settings › Sources & extensions and in About. Also add it to `README.md`.
 - [ ] **U8** No chapter divider above the first loaded chapter; dividers never sit under the traffic lights (D4).
 - [ ] **U7** Reader background: `auto` is always dark for reading; webtoon and paged use the same value.
 - [ ] **U6 / #25** Reader capsules never cover the page on narrow windows (inset or keep within margins).
@@ -135,23 +140,39 @@ light mode, compact/list modes. Real extension source + real downloads once E2 i
 | F3 `]` doesn't mark skipped chapters read | Done | harness |
 | F4 "All Unread" skips read chapters | Done | foliotest |
 | F5 restore keeps downloaded flags | Done | foliotest |
-| F6 rapid chapter-jump race | Done (unchecked) | not raced in the harness — Step 1 |
+| F6 rapid chapter-jump race | Done (unchecked) | not raced in the harness |
 | F7 Cancel all stops running downloads | Done | foliotest |
 | F8 retried downloads start from an empty folder | Done | foliotest; complete chapters return early |
-| E1 resumable engine download, clear errors | Done (unchecked) | Step 1 |
-| E2 Java missing panel | Not started | Step 2 |
-| E3 restart after Java dies | Done (unchecked) | Step 1 |
-| E4 engine cache counted/cleared/wiped | Done (unchecked) | Step 1/6 |
-| E5 engine's own update/backup jobs off | Done (unchecked) | Step 6 |
-| E6 no launch download, old jars removed | Done (unchecked) | Step 6 |
-| S2 engine password not on the command line | Done (unchecked) | Step 1 |
-| S6 quit waits ≤ 2 s | Done (unchecked) | |
-| U1 title bar after reading | Partial (edited, not built) | Step 1 |
-| U4 window minimum size | Partial (edited, not built) | Step 1 |
-| U2 / D2 per-comic settings | Not started | Step 2 |
-| U3 RTL bottom bar | Not started | Step 2 |
-| U5 / D1 settings subpages | Not started | Step 2 |
-| Step 3 consistency pass | Not started | |
-| Step 4 structural cleanup | Not started | |
+| E1 resumable engine download, clear errors | Done (unchecked) | code-read: Range/206 resume, 416 retry, status-specific errors, size + SHA-256 before move. Not run (runtimeDir ignores HOME, so a test would touch the real FolioEngine folder — fix that first) |
+| E2 Java missing panel | Done | Extensions shows an install panel (Temurin 21 link + Check again) instead of an error; `FOLIO_DEBUG_NO_JAVA=1` snapshot. Bundled JRE: not started |
+| E3 restart after Java dies | Done | `foliotest --engine` kills Java; next call restarts |
+| E4 engine cache counted/cleared/wiped | Done | wipe on start verified; `cacheSize()` code-read only |
+| E5 engine's own update/backup jobs off | Done | `ps` shows globalUpdateInterval=0, backupInterval=0 |
+| E6 no launch download, old jars removed | Done (unchecked) | code-read |
+| S2 engine password not on the command line | Done | `ps` shows only `@engine.args` (0600, deleted after start) |
+| S6 quit waits ≤ 2 s | Done | `foliotest --engine`: stop < 3 s, no leftover processes |
+| U1 title bar after reading | Done | snapshot after closing the reader: no gray band |
+| U4 window minimum size | Done | `host.sizingOptions = [.minSize]`; `state` reports contentMin 760×548 before and after reading |
+| U2 / D2 per-comic settings | Done | `ReaderOverrides` on `LibraryEntry`, `ReadingSettingsPanel` (reader ⚙ / `S`, series ··· → Reading Settings…, Settings › Reader defaults); 10 foliotest checks; harness: width on one comic left the default and other comics alone. Popover/sheet contents not snapshotted |
+| U3 RTL bottom bar | Done | snapshot: page 1 + previous chapter on the right, under the scrubber's start |
+| U5 / D1 settings subpages | Done | root list with summaries → pushed pages; `settings:<page>` debug command; snapshots of root, reader, sources, back |
+| Step 3 consistency pass | Mostly done | switches, type scale (`Font.folio*`), TextAction/ToolMenuLabel, library header (U10/U11), category rename/delete (#14), sheets restyled (#21), MigrateSheet, Browse segmented control (#23), cover initials (U9), Recent width + empty state (U15/U16), series page (U13/#17), reader divider/auto background/chapter picker (U7/U8/U14), panels (Filter/Prefs/Web/PageMenu). Left: migrate remaining literal font sizes to `Font.folio*`; U6 left capsule now fits the margin at 800×560 (drops chapter name, truncates title) but the right tools capsule still touches the page edge; sheets/popovers not seen on screen |
+| Step 4 structural cleanup | Partly done | Engine.swift → Engine/EngineLauncher/EngineClient/ExtensionSource; Library.swift → Library/Settings/LibraryDownloads/LibraryStorage/LibraryBackup; Reader.swift → Reader/ReaderView/ReaderChrome/ReaderStripViews; Browse/Extensions are real NavigationStack pushes (#3). Left: ExtensionEngine as an injected actor (S7/S8), Swift 6 strict concurrency, remove unreachable sidebar special-case in `AppDelegate.goBack` |
 | Step 5 harness hooks + wave 3 | Not started | |
 | Step 6 release hygiene | Not started | |
+| Library "Up next" row | Done | snapshot after reading partway; menu/search-hiding not seen |
+| Menu bar (#35) | Done (unchecked) | View menu: Show Reader Controls (M), Reading Settings… (S), Chapters… (C), zoom ⌘= ⌘- ⌘0; QA instance has no menu bar |
+| importLocal off the main thread | Done (unchecked) | copies in a detached task with "Importing i of n…" |
+| Scheduled update stamps only on success | Done | `Library.runScheduledRefresh()`; core-tested except the all-failed case |
+| S3 incognito leaves no traces | Done | foliotest: no aspects, no page URLs, no history entry |
+| S1 OPDS passwords | Owner decision: no Keychain | passwords stay in library.json (user-only file) but are left out of backups |
+| NOTICE.md + README | Done | no LICENSE yet — owner to choose |
+| Light-mode pass | Partial | library, settings root, reader fine. To fix: off-state MonoSwitch knob and slider thumbs low-contrast on light; series-page mono metadata (source line, dates, chapter-bar tools) too faint. Reader chrome/popovers are intentionally dark. No debug key sets appearance yet (add `set:appearance=light`) |
+| Engine runtimeDir honours HOME | Done | built from `Paths.home`; tests no longer touch the real FolioEngine folder |
+| Series details (owner request) | Done | details fetched on open (saved or not); byline author · art by artist · status · source; full description; tag chips (right-click → search all sources); chapters / last update / scanlation facts; all Tachiyomi statuses (licensed, publishing finished, cancelled, on hiatus). Seen with a local details.json; not yet seen with a real extension source |
+| Series ··· before saving (owner request) | Done | Search All Sources for title, Reading Settings, WebView, Copy Link; save is an icon-only bookmark toggle |
+| WebView (owner request) | Done | separate "Folio Web" window: back/forward/reload-stop, editable address, progress line, copy link, open in browser; persistent Folio-only website data + Settings › Privacy clear; `web:<url>` debug command. Left: hand cookies to the engine (likely `Engine/settings/cookie_store.xml` while the engine is stopped; needs matching user agent) and a "Website" button on Browse (engine exposes no source base URL) |
+| Blacklist (owner request) | Done | series ··· → Blacklist… (confirm) or right-click a Browse cover; hidden by id AND by normalised title on every source; removed from library/history (downloads deleted); filtered from Browse, global search, library, Recent; Settings › Library lists them with Remove. 6 foliotest checks; harness: blacklisted series gone from Browse |
+| index.pb repo links (owner request) | Done | engine accepts `…/raw/repo/index.pb` (Keiyoushi, 1714 extensions via `repo-add:`); hints updated |
+| Cloudflare: user verifies (owner request) | Done (needs a real-site check) | Folio runs a FlareSolverr-compatible helper on 127.0.0.1 (`CloudflareSolver.swift`); the engine calls it on a challenge, Folio opens a "Verify you're human" window on that page, the user completes it, cookies + Folio Web's UA go back to the engine. One window per site; reuses a recent pass once silently. Engine started with timeout 240 s, response fallback off. Net layer no longer retries Cloudflare blocks; page tiles show the reason (Cloudflare / no connection / timed out / site error). Protocol + window verified in harness with a fake request; not yet seen against a live Cloudflare site |
+| Extensions notice (owner request) | Done | one-time accept before anything extension-related starts or downloads; shown in Settings › Sources & extensions, About, README |

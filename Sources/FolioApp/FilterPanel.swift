@@ -17,14 +17,14 @@ struct FilterPanel: View {
             }
             Rectangle().fill(Theme.line).frame(height: 1)
             HStack {
-                TextAction(title: "reset", disabled: filters.activeCount == 0) { filters = filters.reset() }
+                TextAction(title: "Reset", disabled: filters.activeCount == 0) { filters = filters.reset() }
                 Spacer()
-                Text(filters.activeCount == 0 ? "no filters" : "\(filters.activeCount) active")
-                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.faint)
+                Text(filters.activeCount == 0 ? "No filters" : "\(filters.activeCount) active")
+                    .font(.folioMono).foregroundStyle(Theme.faint)
                 Spacer()
                 Button("Apply", action: apply).buttonStyle(.monoPrimary)
             }
-            .padding(.horizontal, 18).padding(.vertical, 12)
+            .padding(.horizontal, 18).padding(.vertical, 16)
         }
         .frame(width: 440, height: 540)
         .background(Theme.bg)
@@ -38,7 +38,7 @@ struct FilterPanel: View {
         case .header:
             Eyebrow(f.wrappedValue.name).padding(.top, 18).padding(.bottom, 6)
         case .separator:
-            Rectangle().fill(Theme.line).frame(height: 1).padding(.vertical, 10)
+            Rectangle().fill(Theme.line).frame(height: 1).padding(.vertical, 13)
         case .checkbox(let on):
             SetRow(label: f.wrappedValue.name) { MonoSwitch(isOn: Binding(get: { on }, set: { f.wrappedValue.kind = .checkbox($0) })) }
         case .tristate:
@@ -49,6 +49,10 @@ struct FilterPanel: View {
             }
         case .select(let values, let i):
             SetRow(label: f.wrappedValue.name) {
+                if values.count <= 3 {
+                    MonoChoice(options: values.indices.map { ($0, values[$0]) },
+                               selection: Binding(get: { i }, set: { f.wrappedValue.kind = .select(values: values, index: $0) }))
+                } else {
                 Menu {
                     ForEach(values.indices, id: \.self) { k in
                         Button { f.wrappedValue.kind = .select(values: values, index: k) } label: {
@@ -57,10 +61,11 @@ struct FilterPanel: View {
                     }
                 } label: { menuLabel(values.indices.contains(i) ? values[i] : "—") }
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                }
             }
         case .sort(let values, let i, let asc):
             SetRow(label: f.wrappedValue.name) {
-                HStack(spacing: 10) {
+                HStack(spacing: 12) {
                     Menu {
                         ForEach(values.indices, id: \.self) { k in
                             Button { f.wrappedValue.kind = .sort(values: values, index: k, ascending: asc) } label: {
@@ -70,7 +75,7 @@ struct FilterPanel: View {
                     } label: { menuLabel(i.flatMap { values.indices.contains($0) ? values[$0] : nil } ?? "—") }
                     .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                     Button { f.wrappedValue.kind = .sort(values: values, index: i ?? 0, ascending: !asc) } label: {
-                        Text(asc ? "↑" : "↓").font(.system(size: 13, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink)
+                        Text(asc ? "↑" : "↓").font(.system(size: 14.5, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink)
                     }
                     .buttonStyle(.plain).help(asc ? "Ascending" : "Descending")
                 }
@@ -80,12 +85,12 @@ struct FilterPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 Button { if isOpen { open.remove(f.wrappedValue.id) } else { open.insert(f.wrappedValue.id) } } label: {
                     HStack {
-                        Text(f.wrappedValue.name).font(.system(size: 13)).foregroundStyle(Theme.ink)
+                        Text(f.wrappedValue.name).font(.folioBody).foregroundStyle(Theme.ink)
                         if f.wrappedValue.activeCount > 0 { Chip(text: "\(f.wrappedValue.activeCount)", filled: true) }
                         Spacer()
-                        Text(isOpen ? "−" : "+").font(.system(size: 14, design: .monospaced)).foregroundStyle(Theme.dim)
+                        Text(isOpen ? "−" : "+").font(.system(size: 15.5, design: .monospaced)).foregroundStyle(Theme.dim)
                     }
-                    .padding(.vertical, 12).contentShape(Rectangle())
+                    .padding(.vertical, 16).contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 if isOpen {
@@ -110,11 +115,11 @@ struct FilterPanel: View {
     }
 
     func menuLabel(_ t: String) -> some View {
-        HStack(spacing: 5) {
-            Text(t).font(.system(size: 12, design: .monospaced))
-            Text("▾").font(.system(size: 9))
+        HStack(spacing: 6) {
+            Text(t).font(.system(size: 13.5, design: .monospaced))
+            Text("▾").font(.system(size: 10))
         }
-        .foregroundStyle(Theme.ink).padding(.horizontal, 9).padding(.vertical, 4)
+        .foregroundStyle(Theme.ink).padding(.horizontal, 9).padding(.vertical, 5)
         .overlay(RoundedRectangle(cornerRadius: 3).strokeBorder(Theme.line))
     }
 }
@@ -126,9 +131,9 @@ private struct Tag: View {
 
     var body: some View {
         Button(action: tap) {
-            HStack(spacing: 5) {
-                if chip == false || mark != "" { Text(mark).font(.system(size: 11, weight: .bold, design: .monospaced)) }
-                if chip { Text(filter.name).font(.system(size: 12)).strikethrough(excluded) }
+            HStack(spacing: 6) {
+                if chip == false || mark != "" { Text(mark).font(.system(size: 12.5, weight: .bold, design: .monospaced)) }
+                if chip { Text(filter.name).font(.system(size: 13.5)).strikethrough(excluded) }
             }
             .foregroundStyle(on ? Theme.onInk : (excluded ? Theme.ink : Theme.dim))
             .padding(.horizontal, chip ? 10 : 9).padding(.vertical, chip ? 5 : 4)

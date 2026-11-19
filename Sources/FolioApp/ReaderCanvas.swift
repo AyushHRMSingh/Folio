@@ -452,7 +452,11 @@ final class StripController: NSObject {
             self.loadTasks[id] = nil
             guard !Task.isCancelled, let t = self.tiles[id] else { return }
             if let img { self.show(img, in: t, slot: id, fade: true) }
-            else { t.failed = true; t.setStatus("Couldn\u{2019}t load page \(number) — click to retry", ink: NSColor(self.look.background.ink)) }
+            else {
+                t.failed = true
+                let why = Images.shared.failure(key) ?? "Couldn\u{2019}t load this page. Click to retry."
+                t.setStatus("Page \(number): \(why)", ink: NSColor(self.look.background.ink))
+            }
         }
     }
 
@@ -654,7 +658,7 @@ final class PagedController: NSObject {
     private var signature = ""
     private var settingsWatch: AnyCancellable?
     private var observers: [NSObjectProtocol] = []
-    private var settings: FolioSettings { model.app.library.settings }
+    private var settings: ReaderPrefs { model.prefs }
 
     init(model: ReaderModel, source: Source) {
         self.model = model
@@ -678,7 +682,7 @@ final class PagedController: NSObject {
         doc.onClick = { [weak self] p in self?.click(p) }
         doc.onDoubleClick = { [weak self] p in self?.toggleZoom(at: p) }
         // Crop, double-page and split are library settings: redraw when they flip (SwiftUI doesn't rebuild this canvas for them).
-        settingsWatch = model.app.library.$settings.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
+        settingsWatch = model.$prefs.dropFirst().sink { [weak self] _ in DispatchQueue.main.async { self?.refresh() } }
         // A page's shape arriving can change which pages count as wide, so spreads re-pair.
         Images.shared.onAspect = { [weak self] _ in self?.refresh() }
         doc.menuAt = { [weak self] p in
@@ -735,7 +739,9 @@ final class PagedController: NSObject {
                 guard let self else { return }
                 let img = await Images.shared.page(ref, source: self.source)
                 guard self.signature == sig, i < self.slots.count, self.slots[i].key == key else { return }
-                if let img { self.apply(img, to: i, split: split) } else { self.slots[i].tile.setStatus("Couldn\u{2019}t load this page", ink: .gray) }
+                if let img { self.apply(img, to: i, split: split) } else {
+                    self.slots[i].tile.setStatus((Images.shared.failure(key) ?? "Couldn\u{2019}t load this page").replacingOccurrences(of: " Click to retry.", with: " Turn the page to retry.").replacingOccurrences(of: " Click to verify.", with: ""), ink: .gray)
+                }
             }
         }
     }

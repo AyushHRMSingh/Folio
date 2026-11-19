@@ -15,11 +15,27 @@ struct SeriesView: View {
     @State private var onlyDownloaded = false
     @State private var onlyBookmarked = false
     @State private var assigning = false
+    @State private var readingSettings = false
+    @State private var confirmBlacklist = false
     @State private var selected = Set<String>()       // chapter urls (⌘/⇧-click)
     @State private var lastClicked: String?
 
     var entry: LibraryEntry? { library.entry(series.id) }
-    var shown: Series { entry?.series ?? series }
+    /// Full details fetched from the source on open (browse results carry only a title and cover).
+    @State private var detailed: Series?
+    var shown: Series {
+        let base = entry?.series ?? series
+        guard let d = detailed else { return base }
+        var s = base       // keep identity/cover choices from the library; fill in what the source knows
+        if (s.summary ?? "").isEmpty { s.summary = d.summary }
+        if s.genres.isEmpty { s.genres = d.genres }
+        if (s.author ?? "").isEmpty { s.author = d.author }
+        if (s.artist ?? "").isEmpty { s.artist = d.artist }
+        if s.status == .unknown { s.status = d.status }
+        if s.webURL == nil { s.webURL = d.webURL }
+        if entry == nil, s.coverURL == nil { s.coverURL = d.coverURL }
+        return s
+    }
     var source: Source? { library.source(series.sourceID) }
 
     var rows: [ChapterState] {
@@ -53,12 +69,23 @@ struct SeriesView: View {
                     Text("No chapters match").font(.meta).foregroundStyle(Theme.dim).padding(.top, 30).frame(maxWidth: .infinity)
                 }
             }
-            .frame(maxWidth: 940, alignment: .leading)            // lines stay readable on wide windows
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, 32).padding(.top, 20).padding(.bottom, 60)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .background(Theme.bg)
         .sheet(isPresented: $assigning) { AssignCategoriesSheet(library: library, seriesID: series.id) }
+        .sheet(isPresented: $readingSettings) { ReadingSettingsSheet(library: library, series: shown) }
+        .confirmationDialog("Blacklist \u{201C}\(shown.title)\u{201D}?", isPresented: $confirmBlacklist, titleVisibility: .visible) {
+            Button("Blacklist", role: .destructive) {
+                library.blacklist(shown)
+                app.status = "Blacklisted \u{201C}\(shown.title)\u{201D}. Undo in Settings \u{203A} Library."
+                if !app.path.isEmpty { app.path.removeLast() }
+            }
+        } message: {
+            Text("It won\u{2019}t show up again in Browse, search, your library or history, on any source. Its downloads are deleted. You can undo this in Settings \u{203A} Library.")
+        }
+        .task { await loadDetails() }
         .task {
             await loadPreview()
             // Library entries saved before web addresses were remembered: fetch them once.
@@ -69,14 +96,12 @@ struct SeriesView: View {
     }
 
     var header: some View {
-        HStack(alignment: .top, spacing: 22) {
+        HStack(alignment: .top, spacing: 28) {
             CoverView(series: shown, source: source, corner: 3).frame(width: 112)
-            VStack(alignment: .leading, spacing: 10) {
-                Text(shown.title).font(.system(size: 30, weight: .light)).tracking(-0.9)
+            VStack(alignment: .leading, spacing: 12) {
+                Text(shown.title).font(.system(size: 32, weight: .light)).tracking(-0.9)
                     .foregroundStyle(Theme.ink).lineLimit(3).textSelection(.enabled)
-                Text([shown.author, source?.name, shown.status == .unknown ? nil : shown.status.rawValue]
-                        .compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: "  ·  "))
-                    .font(.system(size: 11.5, design: .monospaced)).foregroundStyle(Theme.dim)
+                byline
                 actions.padding(.vertical, 2)
                 about
             }
@@ -100,37 +125,89 @@ struct SeriesView: View {
     }
 
     var selectionBar: some View {
-        HStack(spacing: 16) {
-            Text("\(selected.count) selected").font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.ink)
+        HStack(spacing: 20) {
+            Text("\(selected.count) selected").font(.system(size: 13.5, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.ink)
             Button("Mark read") { library.setRead(series.id, chapters: Array(selected), true); selected = [] }
             Button("Mark unread") { library.setRead(series.id, chapters: Array(selected), false); selected = [] }
             Spacer()
             Button("Clear") { selected = [] }
         }
-        .buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.dim)
-        .padding(.horizontal, 12).padding(.vertical, 8)
+        .buttonStyle(.plain).font(.system(size: 13.5)).foregroundStyle(Theme.dim)
+        .padding(.horizontal, 12).padding(.vertical, 10)
         .background(Theme.surface, in: RoundedRectangle(cornerRadius: 7))
     }
 
+    /// Author (and artist when different) · status · source.
+    var byline: some View {
+        let people: String? = {
+            let a = (shown.author ?? "").trimmingCharacters(in: .whitespaces)
+            let r = (shown.artist ?? "").trimmingCharacters(in: .whitespaces)
+            if a.isEmpty { return r.isEmpty ? nil : r }
+            if r.isEmpty || r.caseInsensitiveCompare(a) == .orderedSame { return a }
+            return "\(a) · art by \(r)"
+        }()
+        return Text([people, shown.status == .unknown ? nil : shown.status.label, source?.name].compactMap { $0 }.joined(separator: "   ·   "))
+            .font(.system(size: 14)).foregroundStyle(Theme.dim).textSelection(.enabled)
+    }
+
+    /// Facts drawn from the chapter list.
+    var facts: [(String, String)] {
+        let all = entry?.chapters.map(\.chapter) ?? preview
+        var out: [(String, String)] = []
+        if !all.isEmpty { out.append(("Chapters", "\(all.count)")) }
+        if let latest = all.compactMap(\.uploaded).max() {
+            out.append(("Last update", latest.formatted(date: .abbreviated, time: .omitted)))
+        }
+        var seen = Set<String>()
+        let groups = all.compactMap(\.scanlator).flatMap { $0.split(separator: "&").map { $0.trimmingCharacters(in: .whitespaces) } }
+            .filter { !$0.isEmpty && seen.insert($0.lowercased()).inserted }
+        if !groups.isEmpty {
+            out.append(("Scanlation", groups.prefix(4).joined(separator: ", ") + (groups.count > 4 ? " +\(groups.count - 4)" : "")))
+        }
+        return out
+    }
+
     @ViewBuilder var about: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let d = shown.summary, !d.isEmpty {
-                Text(d).font(.system(size: 13)).foregroundStyle(Theme.dim).lineSpacing(4)
-                    .lineLimit(expanded ? nil : 3).textSelection(.enabled)
-                Button(expanded ? "less" : "more") { expanded.toggle() }
-                    .buttonStyle(.plain).font(.system(size: 11.5, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink)
+        VStack(alignment: .leading, spacing: 14) {
+            if let d = shown.summary?.trimmingCharacters(in: .whitespacesAndNewlines), !d.isEmpty {
+                Text(d).font(.system(size: 14.5)).foregroundStyle(Theme.dim).lineSpacing(5)
+                    .lineLimit(expanded ? nil : 4).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                if d.count > 420 {
+                    Button(expanded ? "Show less" : "Show more") { withAnimation(.easeOut(duration: 0.15)) { expanded.toggle() } }
+                        .buttonStyle(.plain).font(.system(size: 13.5, weight: .medium)).foregroundStyle(Theme.ink)
+                }
+            } else if detailed == nil && entry == nil {
+                Text("Loading details…").font(.system(size: 13.5)).foregroundStyle(Theme.faint)
             }
             if !shown.genres.isEmpty {
-                Text(shown.genres.joined(separator: "  /  ")).font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.faint)
+                FlowLayout(spacing: 7) {
+                    ForEach(shown.genres, id: \.self) { g in
+                        Text(g).font(.system(size: 12.5)).foregroundStyle(Theme.dim)
+                            .padding(.horizontal, 11).padding(.vertical, 5)
+                            .overlay(Capsule().strokeBorder(Theme.line))
+                            .contextMenu { Button("Search All Sources for \u{201C}\(g)\u{201D}") { app.searchEverywhere(g) } }
+                    }
+                }
+            }
+            let f = facts
+            if !f.isEmpty {
+                HStack(alignment: .top, spacing: 34) {
+                    ForEach(f, id: \.0) { k, v in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Eyebrow(k)
+                            Text(v).font(.system(size: 13.5)).foregroundStyle(Theme.ink).lineLimit(2).textSelection(.enabled)
+                        }
+                    }
+                }
             }
         }
     }
 
     var chapterBar: some View {
-        HStack(spacing: 14) {
-            Text("\(rows.count) chapters").font(.system(size: 12, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.ink)
+        HStack(spacing: 18) {
+            Text("\(rows.count) chapters").font(.system(size: 13.5, weight: .semibold, design: .monospaced)).foregroundStyle(Theme.ink)
             if let e = entry, e.unread > 0 {
-                Text("\(e.unread) unread").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim)
+                Text("\(e.unread) unread").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim)
             }
             Spacer()
             if entry != nil {
@@ -140,34 +217,36 @@ struct SeriesView: View {
                     Toggle("Bookmarked", isOn: $onlyBookmarked)
                 } label: {
                     Text({ let n = [onlyUnread, onlyDownloaded, onlyBookmarked].filter { $0 }.count; return n > 0 ? "filter · \(n)" : "filter" }())
-                        .font(.system(size: 12, design: .monospaced)).foregroundStyle(onlyUnread || onlyDownloaded || onlyBookmarked ? Theme.ink : Theme.dim)
+                        .font(.system(size: 13.5, design: .monospaced)).foregroundStyle(onlyUnread || onlyDownloaded || onlyBookmarked ? Theme.ink : Theme.dim)
                 }
                 .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
             }
             if let e = entry {
                 Button { Task { do { let n = try await library.refresh(e.id); app.status = n == 0 ? "No new chapters." : "\(n) new." } catch { app.report(error) } } }
-                    label: { Text("refresh").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim) }
+                    label: { Text("refresh").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim) }
                     .buttonStyle(.plain).help("Check for new chapters")
             }
             Button { newestFirst.toggle() } label: {
-                Text(newestFirst ? "newest ↓" : "oldest ↑").font(.system(size: 12, design: .monospaced)).foregroundStyle(Theme.dim)
+                Text(newestFirst ? "newest ↓" : "oldest ↑").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(Theme.dim)
             }.buttonStyle(.plain)
         }
     }
 
     /// Save · Read · extras, in one row.
     @ViewBuilder var actions: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: 10) {
+            // One toggle, icon only: filled = in your library.
             Button { Task { await app.toggleSaved(shown) } } label: {
-                Image(systemName: saved ? "bookmark.fill" : "bookmark")
-                    .font(.system(size: 16)).frame(width: 22, height: 22)
+                Image(systemName: saved ? "bookmark.fill" : "bookmark").font(.system(size: 15, weight: .medium))
                     .foregroundStyle(saved ? Theme.ink : Theme.dim)
+                    .frame(width: 18)
             }
             .buttonStyle(.monoLarge)
-            .help(saved ? "In your library — click to remove" : "Add to your library")
+            .help(saved ? "In your library. Click to remove." : "Add to your library")
+            .accessibilityLabel(saved ? "Remove from library" : "Add to library")
             if let e = entry, !e.chapters.isEmpty {
                 Button { app.resume(e) } label: {
-                    HStack(spacing: 7) {
+                    HStack(spacing: 9) {
                         let started = e.chapters.contains { $0.read || $0.started }
                         if let c = e.resumeChapter {
                             Text("\(started ? "Continue" : "Read") · \(c.chapter.name)\(c.started ? " · p\(c.lastPage + 1)" : "")").lineLimit(1)
@@ -179,28 +258,47 @@ struct SeriesView: View {
             } else if entry == nil, let first = preview.readingOrder().first {
                 Button { app.read(series, first) } label: { Text("Read  →") }.buttonStyle(.monoLargePrimary)
             }
-            if let e = entry {
+            if let e = entry, series.sourceID != "local" {      // local files are already on this Mac
                 Menu { DownloadMenuItems(library: library, entry: e) } label: { Text("Download") }
                     .menuStyle(.borderlessButton).menuIndicator(.hidden).buttonStyle(.mono).fixedSize()
-                    .disabled(!saved || series.sourceID == "local")
-                    .help(series.sourceID == "local" ? "Local files are already on this Mac" : (saved ? "Download chapters" : "Save to your library to download"))
-                Menu {
-                    if saved { Button("Categories…") { assigning = true } }
-                    Picker("Reading mode", selection: Binding(get: { library.mode(for: e.id) }, set: { library.setMode(e.id, $0) })) {
-                        ForEach(ReadingMode.allCases) { Text($0.label).tag($0) }
-                    }
-                    Divider()
-                    Button("Mark all as read") { library.markAll(e.id, read: true) }.disabled(e.unread == 0)
-                    Button("Mark all as unread") { library.markAll(e.id, read: false) }
-                    if series.sourceID != "local" && saved { Button("Migrate to Another Source…") { app.migrating = e } }
-                    if series.sourceID != "local" {
-                        Divider()
-                        Button("View in WebView") { app.openWeb(shown.webURL, title: shown.title) }
-                    }
-                } label: { Text("···") }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).buttonStyle(.mono).fixedSize()
+                    .disabled(!saved)
+                    .help(saved ? "Download chapters" : "Add to your library to download")
             }
+            // Available whether or not the series is in your library.
+            Menu {
+                Button("Search All Sources for \u{201C}\(shown.title)\u{201D}") { app.searchEverywhere(shown.title) }
+                Button("Reading Settings…") { readingSettings = true }
+                if saved { Button("Categories…") { assigning = true } }
+                if let e = entry {
+                    Divider()
+                    Button("Mark All as Read") { library.markAll(e.id, read: true) }.disabled(e.unread == 0)
+                    Button("Mark All as Unread") { library.markAll(e.id, read: false) }
+                }
+                if series.sourceID != "local" {
+                    Divider()
+                    if saved, let e = entry { Button("Migrate to Another Source…") { app.migrating = e } }
+                    Button("View in WebView") { app.openWeb(shown.webURL, title: shown.title) }
+                    if let u = shown.webURL, !u.isEmpty {
+                        Button("Copy Link") {
+                            NSPasteboard.general.clearContents(); NSPasteboard.general.setString(u, forType: .string)
+                            app.status = "Link copied."
+                        }
+                    }
+                }
+                Divider()
+                Button("Blacklist…", role: .destructive) { confirmBlacklist = true }
+            } label: { Text("···") }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).buttonStyle(.mono).fixedSize()
         }
+    }
+
+    /// Always ask the source for the full description, tags, authors and status. A saved series that's missing
+    /// them is refreshed so the library keeps them too.
+    func loadDetails() async {
+        guard let source, series.sourceID != "local" || (shown.summary ?? "").isEmpty else { return }
+        if let e = entry, !(e.series.summary ?? "").isEmpty, !e.series.genres.isEmpty { return }
+        if let d = try? await source.details(series) { detailed = d }
+        if let e = entry, (e.series.summary ?? "").isEmpty || e.series.genres.isEmpty { _ = try? await library.refresh(e.id) }
     }
 
     func loadPreview() async {
@@ -229,21 +327,30 @@ struct ChapterRow: View {
         return n == n.rounded() ? String(Int(n)) : String(n)
     }
 
+    /// True when the title already carries the chapter number ("Chapter 3", "Ch. 3.5").
+    var nameHasNumber: Bool {
+        guard state.chapter.number >= 0 else { return false }
+        let tokens = state.chapter.name.split { !($0.isNumber || $0 == ".") }.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: ".")) }
+        return tokens.contains { Double($0) == state.chapter.number }
+    }
+
     var body: some View {
         HStack(spacing: 0) {
-            Text(number).font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundStyle(state.read ? Theme.faint : Theme.ink).frame(width: 54, alignment: .leading)
+            if !nameHasNumber {
+                Text(number).font(.system(size: 14.5, weight: .medium, design: .monospaced))
+                    .foregroundStyle(state.read ? Theme.faint : Theme.ink).frame(width: 54, alignment: .leading)
+            }
             VStack(alignment: .leading, spacing: 2) {
-                Text(state.chapter.name).font(.system(size: 13, weight: state.read ? .regular : .medium))
+                Text(state.chapter.name).font(.system(size: 14.5, weight: state.read ? .regular : .medium))
                     .foregroundStyle(state.read ? Theme.dim : Theme.ink).lineLimit(1)
                 if let s = state.chapter.scanlator, !s.isEmpty { Text(s).font(.meta).foregroundStyle(Theme.faint).lineLimit(1) }
             }
             Spacer(minLength: 12)
             if state.started, let n = state.pageCount {
-                Text("p\(state.lastPage + 1)/\(n)").font(.system(size: 11, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink).padding(.trailing, 14)
+                Text("p\(state.lastPage + 1)/\(n)").font(.system(size: 12.5, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink).padding(.trailing, 14)
             }
             if inLibrary && hover {
-                HStack(spacing: 12) {
+                HStack(spacing: 15) {
                     iconButton(state.read ? "circle" : "checkmark.circle", state.read ? "Mark as unread" : "Mark as read") {
                         library.setRead(series.id, chapters: [state.chapter.url], !state.read)
                     }
@@ -252,25 +359,25 @@ struct ChapterRow: View {
                     }
                 }
                 .padding(.trailing, 14)
-            } else if state.bookmarked { Image(systemName: "bookmark.fill").font(.system(size: 10)).foregroundStyle(Theme.ink).padding(.trailing, 12) }
+            } else if state.bookmarked { Image(systemName: "bookmark.fill").font(.system(size: 11)).foregroundStyle(Theme.ink).padding(.trailing, 12) }
             if let d = state.chapter.uploaded {
                 Text(d, format: .dateTime.day().month(.abbreviated).year(.twoDigits))
-                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(Theme.faint).padding(.trailing, 14)
+                    .font(.system(size: 12.5, design: .monospaced)).foregroundStyle(Theme.faint).padding(.trailing, inLibrary && series.sourceID != "local" ? 14 : 0)
             }
-            Group {
-                if inLibrary && series.sourceID != "local" {
+            if inLibrary && series.sourceID != "local" {
+              Group {
                     if downloading { ProgressView().controlSize(.mini) }
-                    else if state.downloaded { Text("↓").font(.system(size: 12, weight: .bold, design: .monospaced)).foregroundStyle(Theme.dim).help("Downloaded") }
+                    else if state.downloaded { Text("↓").font(.system(size: 13.5, weight: .bold, design: .monospaced)).foregroundStyle(Theme.dim).help("Downloaded") }
                     else {
                         Button { Task { do { try await library.download(series.id, chapter: state.chapter.url) } catch { app.report(error) } } }
-                            label: { Text("↓").font(.system(size: 12, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint) }
+                            label: { Text("↓").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint) }
                             .buttonStyle(.plain).help("Download for offline reading")
                     }
-                }
+              }
+              .frame(width: 22, alignment: .trailing)
             }
-            .frame(width: 22)
         }
-        .padding(.vertical, 9)
+        .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.line.opacity(0.6)).frame(height: 1) }
         .background(selected ? Theme.surfaceHover : (hover ? Theme.surface : .clear))
         .contentShape(Rectangle())
@@ -285,7 +392,7 @@ struct ChapterRow: View {
     }
 
     func iconButton(_ name: String, _ help: String, _ run: @escaping () -> Void) -> some View {
-        Button(action: run) { Image(systemName: name).font(.system(size: 13)).foregroundStyle(Theme.dim).frame(width: 18, height: 18).contentShape(Rectangle()) }
+        Button(action: run) { Image(systemName: name).font(.system(size: 14.5)).foregroundStyle(Theme.dim).frame(width: 18, height: 18).contentShape(Rectangle()) }
             .buttonStyle(.plain).help(help)
     }
 

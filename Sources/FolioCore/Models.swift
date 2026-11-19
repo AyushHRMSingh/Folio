@@ -3,7 +3,36 @@ import Foundation
 // The three core models, following the Tachiyomi design: a source describes series, their
 // chapters, and the pages of a chapter. `url` is the source-specific stable key for each.
 
-public enum SeriesStatus: String, Codable, Sendable { case unknown, ongoing, completed }
+/// Publication status, matching the Tachiyomi/Mihon set. Unknown raw values decode as `.unknown`.
+public enum SeriesStatus: String, Codable, Sendable {
+    case unknown, ongoing, completed, licensed, publishingFinished, cancelled, hiatus
+
+    /// From the extension engine's status names (ONGOING, PUBLISHING_FINISHED, ON_HIATUS, …).
+    public init(engine s: String?) {
+        switch (s ?? "").uppercased() {
+        case "ONGOING": self = .ongoing
+        case "COMPLETED": self = .completed
+        case "LICENSED": self = .licensed
+        case "PUBLISHING_FINISHED": self = .publishingFinished
+        case "CANCELLED": self = .cancelled
+        case "ON_HIATUS": self = .hiatus
+        default: self = .unknown
+        }
+    }
+    public var label: String {
+        switch self {
+        case .unknown: "Unknown"
+        case .ongoing: "Ongoing"
+        case .completed: "Completed"
+        case .licensed: "Licensed"
+        case .publishingFinished: "Publishing finished"
+        case .cancelled: "Cancelled"
+        case .hiatus: "On hiatus"
+        }
+    }
+    /// No more chapters are expected.
+    public var isFinished: Bool { self == .completed || self == .publishingFinished || self == .cancelled }
+}
 
 public struct Series: Codable, Hashable, Sendable, Identifiable {
     public var sourceID: String

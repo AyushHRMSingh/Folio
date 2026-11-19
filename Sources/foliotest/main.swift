@@ -82,9 +82,60 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil) { let p = Process(); 
     let new = try await lib.refresh(e.id)
     e = lib.entry(e.id)!
     check(new == 1 && e.unread == 3, "library: update finds 1 new chapter, read state kept")
-    lib.setMode(e.id, .webtoon)
-    check(Library().entry(e.id)?.readingMode == .webtoon && Library().entry(e.id)?.chapters.count == 4,
+    lib.setMode(e.id, .rightToLeft)
+    check(Library().entry(e.id)?.readingMode == .rightToLeft && Library().entry(e.id)?.chapters.count == 4,
           "library: state persists across restarts")
+
+    // ---------- blacklist
+    do {
+        let bl = Library(file: FileManager.default.temporaryDirectory.appendingPathComponent("bl-\(UUID().uuidString).json"))
+        let bad = Series(sourceID: "ext-1", url: "9", title: "Solo Levelling: Ragnarok!")
+        let sameElsewhere = Series(sourceID: "ext-2", url: "77", title: "solo levelling ragnarok")
+        let fine = Series(sourceID: "ext-1", url: "10", title: "Something Else")
+        bl._replaceEntries([LibraryEntry(series: bad, chapters: []), LibraryEntry(series: fine, chapters: [])])
+        bl.blacklist(bad)
+        check(bl.entry(bad.id) == nil && bl.isBlacklisted(bad), "blacklist: series leaves the library and is hidden")
+        check(bl.isBlacklisted(sameElsewhere) && !bl.isBlacklisted(fine), "blacklist: same title on another source is hidden too, others aren't")
+        check(bl.browse().map(\.id) == [fine.id] && bl.savedEntries.count == 1, "blacklist: library lists and counts skip it")
+        bl.blacklist(bad)
+        check(bl.settings.blacklist.count == 1, "blacklist: adding twice keeps one entry")
+        bl.unblacklist(bad.id)
+        check(!bl.isBlacklisted(bad) && !bl.isBlacklisted(sameElsewhere), "blacklist: removing it shows it again")
+        if let d = #"{"blacklist":[{"id":"x","title":"T"},{"nonsense":1}]}"#.data(using: .utf8),
+           let st = try? JSONDecoder().decode(FolioSettings.self, from: d) {
+            check(st.blacklist.count == 2 && st.blacklist[0].title == "T", "blacklist: decodes leniently from old/odd files")
+        } else { check(false, "blacklist: decodes leniently from old/odd files") }
+    }
+
+    // ---------- per-comic reading settings (D2)
+    lib.setMode(e.id, lib.settings.defaultMode)
+    check(lib.entry(e.id)?.readingMode == nil, "reader prefs: choosing the default mode stores no override")
+    let defWidth = lib.settings.webtoonWidth
+    lib.setReaderPref(e.id, \.webtoonWidth, \.webtoonWidth, 0.9)
+    lib.setReaderPref(e.id, \.cropBorders, \.cropBorders, !lib.settings.cropBorders)
+    check(lib.readerPrefs(for: e.id).webtoonWidth == 0.9 && lib.settings.webtoonWidth == defWidth,
+          "reader prefs: a comic's width doesn't change the default")
+    check(lib.readerPrefs(for: nil).webtoonWidth == defWidth, "reader prefs: other comics keep the default")
+    check(Library().readerPrefs(for: e.id).webtoonWidth == 0.9, "reader prefs: per-comic settings persist")
+    lib.setReaderPref(e.id, \.webtoonWidth, \.webtoonWidth, defWidth)
+    check(lib.readerOverride(e.id, \.webtoonWidth) == nil, "reader prefs: setting a value back to the default clears it")
+    lib.settings.pageGap = 24
+    check(lib.readerPrefs(for: e.id).pageGap == 24, "reader prefs: un-overridden values follow a changed default")
+    lib.resetReaderPref(e.id, \.cropBorders)
+    check(lib.entry(e.id)?.reader == nil && !lib.hasOwnReaderPrefs(e.id), "reader prefs: reset clears the comic's own values")
+    lib.setReaderPref(e.id, \.readerBackground, \.readerBackground, .gray)
+    lib.setMode(e.id, .leftToRight)
+    lib.useReaderPrefsAsDefault(e.id)
+    check(lib.settings.readerBackground == .gray && lib.settings.defaultMode == .leftToRight && !lib.hasOwnReaderPrefs(e.id),
+          "reader prefs: 'use as default' copies to the defaults and clears the comic's own values")
+    lib.settings.readerBackground = .black; lib.settings.defaultMode = .webtoon; lib.settings.pageGap = 0
+    lib.setReaderPref(nil, \.webtoonWidth, \.webtoonWidth, 0.5)
+    check(lib.settings.webtoonWidth == 0.5, "reader prefs: with no comic, a change edits the default")
+    lib.settings.webtoonWidth = defWidth
+    if let d = #"{"webtoonWidth":0.7,"tapZones":"nonsense","cropBorders":"yes"}"#.data(using: .utf8),
+       let o = try? JSONDecoder().decode(ReaderOverrides.self, from: d) {
+        check(o.webtoonWidth == 0.7 && o.tapZones == nil && o.cropBorders == nil, "reader prefs: odd values decode leniently")
+    } else { check(false, "reader prefs: odd values decode leniently") }
 
     // ---------- categories, filters, sorting, incognito, history
     let reading = lib.addCategory("Reading")!
@@ -116,6 +167,17 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil) { let p = Process(); 
     let before = lib.entry(e.id)!.chapters
     lib.setProgress(e.id, chapter: chs[2].url, page: 1, of: 2)
     check(lib.entry(e.id)!.chapters == before, "incognito: reading progress is not recorded")
+    lib.setPageAspects(e.id, chapter: chs[2].url, [1.5, 2.0])
+    check(lib.entry(e.id)!.chapters == before, "incognito: page aspects are not saved")
+    _ = try? await lib.pages(e.series, chs[2])
+    check(lib.entry(e.id)!.chapters == before, "incognito: page URLs are not cached")
+    let hBefore = lib.recents.count, nBefore = lib.entries.count
+    _ = try? await lib.track(Series(sourceID: "local", url: "Beta Tale", title: "Beta Tale"))
+    check(lib.recents.count == hBefore && lib.entries.count == nBefore, "incognito: track() adds no history entry")
+    let cat = e.id
+    lib.setCategories(e.id, [cat, "x", cat, "x", "y"])
+    check(lib.entry(e.id)!.categoryIDs == [cat, "x", "y"], "setCategories de-duplicates, keeps order")
+    lib.setCategories(e.id, [])
     lib.settings.incognito = false
     lib.setProgress(e.id, chapter: chs[2].url, page: 1, of: 2)
     let resumeBefore = lib.entry(e.id)!.resumeChapter?.chapter.url
@@ -755,8 +817,9 @@ func spreads() {
     try await engine.ensureRunning()
     check(engine.state == .running && !FileManager.default.fileExists(atPath: stale.path), "E4: engine caches are wiped on engine start")
     let ps = Process(); ps.executableURL = URL(fileURLWithPath: "/bin/ps"); ps.arguments = ["-axo", "args"]
-    let out = Pipe(); ps.standardOutput = out; try ps.run(); ps.waitUntilExit()
-    let args = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+    let out = Pipe(); ps.standardOutput = out; try ps.run()
+    let args = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)   // read first: a full pipe would block ps
+    ps.waitUntilExit()
     let mine = args.split(separator: "\n").filter { $0.contains("user.home=\(Paths.home.path)") }
     check(mine.allSatisfy { $0.contains("globalUpdateInterval=0") && $0.contains("backupInterval=0") }, "E5: the engine's own update and backup jobs are off")
     check(!mine.isEmpty && !mine.contains { $0.contains("authPassword=") }, "S2: the engine password is not on any command line")
@@ -769,6 +832,17 @@ func spreads() {
     let t0 = Date()
     engine.stop()
     check(Date().timeIntervalSince(t0) < 3 && engine.state == .stopped, "S6: stop() returns within 2-3 s")
+}
+
+do {
+    // backups never include OPDS passwords; restore keeps the ones already here
+    let kf = Paths.root.appendingPathComponent("pw-lib.json")
+    let kl = Library(file: kf); kl.settings.servers = [OPDSServer(id: "pw1", name: "K", url: "http://x", username: "u", password: "hunter2")]
+    let bk = try kl.backupData()
+    check(!(String(data: bk, encoding: .utf8) ?? "").contains("hunter2"), "backup has no OPDS passwords")
+    check(kl.settings.servers.first?.password == "hunter2", "backup leaves live password alone")
+    try kl.restore(bk)
+    check(kl.settings.servers.first?.password == "hunter2", "restore keeps existing password for same server")
 }
 
 do {
