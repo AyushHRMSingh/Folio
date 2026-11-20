@@ -37,10 +37,16 @@ extension ExtensionEngine {
 
     public func fetch(_ path: String) async throws -> Data {
         try await ensureRunning()
-        let (d, h) = try await Net.data(for: request(path), session: .folioLocal)
+        // One attempt: the engine has already gone to the site (and the extension retries on its own if it wants).
+        // Retrying here would multiply every failure into more requests to the site.
+        let (d, h) = try await Net.data(for: request(path), session: .folioLocal, attempts: 1)
         guard (200..<300).contains(h.statusCode) else {
-            if CloudflareError.matches(String(decoding: d.prefix(2048), as: UTF8.self)) { throw CloudflareError("HTTP \(h.statusCode)") }
-            throw FolioError("Couldn't load image (HTTP \(h.statusCode))")
+            let body = String(decoding: d.prefix(2048), as: UTF8.self)
+            if CloudflareError.matches(body) { throw CloudflareError("HTTP \(h.statusCode)") }
+            // The engine wraps the site's answer ("HTTP error 429"); report the site's code, not the engine's 500.
+            let site = body.range(of: #"HTTP error \d{3}"#, options: .regularExpression).map { Int(body[$0].suffix(3)) ?? h.statusCode } ?? h.statusCode
+            if site == 429 || h.statusCode == 429 { throw RateLimitedError() }
+            throw FolioError("Couldn't load image (HTTP \(site))")
         }
         return d
     }

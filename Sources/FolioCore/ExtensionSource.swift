@@ -110,13 +110,13 @@ public final class ExtensionSource: Source, @unchecked Sendable {
         case .remote(let u):
             let s = u.absoluteString
             let path = s.hasPrefix("engine:") ? String(s.dropFirst(7)) : s
-            return try await ImageFetch.data(key: "e|" + path) { [engine] in try await engine.fetch(path) }
+            return try await ImageFetch.data(key: "e|" + path, group: id) { [engine] in try await engine.fetch(path) }
         }
     }
 
     public func coverData(_ s: Series) async throws -> Data? {
         guard let c = s.coverURL, !c.isEmpty else { return nil }
         // Covers can change upstream, so they expire after a week; pages never do.
-        return try? await ImageFetch.data(key: "e|" + c, maxAge: 7 * 86400) { [engine] in try await engine.fetch(c) }
+        return try? await ImageFetch.data(key: "e|" + c, group: id, maxAge: 7 * 86400) { [engine] in try await engine.fetch(c) }
     }
 }

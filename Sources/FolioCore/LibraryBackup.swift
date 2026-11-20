@@ -17,6 +17,7 @@ extension Library {
         var covers: [String: Data] = [:]
         for e in entries { if let c = e.customCover, let d = try? Data(contentsOf: URL(fileURLWithPath: c)) { covers[(c as NSString).lastPathComponent] = d } }
         var safe = settings   // backups never carry OPDS passwords
+        safe.appLock = nil    // nor the lock: restoring on another Mac must not lock you out
         for i in safe.servers.indices { safe.servers[i].password = "" }
         let b = BackupFile(created: Date(), library: LibraryFile(entries: entries, settings: safe), covers: covers)
         return try JSONEncoder.folio.encode(b)
@@ -45,7 +46,9 @@ extension Library {
             if let old = settings.servers.first(where: { $0.id == lib.settings.servers[i].id }) { lib.settings.servers[i].password = old.password }
         }
         entries = lib.entries
+        let lock = settings.appLock
         settings = lib.settings
+        settings.appLock = lock       // the lock belongs to this Mac, not to the backup
         save()
         return entries.count
     }

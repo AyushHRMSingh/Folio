@@ -99,13 +99,24 @@ final class PageTile: CALayer {
 
     override func layoutSublayers() {
         super.layoutSublayers()
-        label.frame = CGRect(x: 0, y: bounds.midY + 10, width: bounds.width, height: 18)
+        if label.isWrapped, let s = label.string as? String {
+            // A message: wrapped to a readable width, centred in the page.
+            let w = max(60, min(bounds.width - 48, 460))
+            let font = NSFont.systemFont(ofSize: 14)
+            let h = ceil((s as NSString).boundingRect(with: CGSize(width: w, height: 1000), options: [.usesLineFragmentOrigin],
+                                                      attributes: [.font: font]).height) + 4
+            label.frame = CGRect(x: (bounds.width - w) / 2, y: bounds.midY - h / 2, width: w, height: h)
+        } else {
+            label.frame = CGRect(x: 0, y: bounds.midY + 10, width: bounds.width, height: 18)
+        }
         spinner.position = CGPoint(x: bounds.midX, y: bounds.midY - 10)
     }
 
     /// Empty container: page number + spinner.
     func setLoading(_ number: Int, ink: NSColor) {
         label.isHidden = false
+        label.isWrapped = false
+        label.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium); label.fontSize = 12
         label.string = "\(number)"
         label.foregroundColor = ink.withAlphaComponent(0.4).cgColor
         spinner.strokeColor = ink.withAlphaComponent(0.45).cgColor
@@ -123,6 +134,9 @@ final class PageTile: CALayer {
         spinner.isHidden = true
         spinner.removeAllAnimations()
         label.isHidden = text == nil
+        label.isWrapped = true
+        label.truncationMode = .none
+        label.font = NSFont.systemFont(ofSize: 14); label.fontSize = 14
         label.string = text
         label.foregroundColor = ink.withAlphaComponent(0.55).cgColor
         setNeedsLayout()
@@ -455,7 +469,7 @@ final class StripController: NSObject {
             else {
                 t.failed = true
                 let why = Images.shared.failure(key) ?? "Couldn\u{2019}t load this page. Click to retry."
-                t.setStatus("Page \(number): \(why)", ink: NSColor(self.look.background.ink))
+                t.setStatus("Page \(number)\n\(why)", ink: NSColor(self.look.background.ink))
             }
         }
     }

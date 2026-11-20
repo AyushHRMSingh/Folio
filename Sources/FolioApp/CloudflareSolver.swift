@@ -120,7 +120,22 @@ final class CloudflareSolver {
         }
     }
 
-    // MARK: solving (by the user)
+    // MARK: deciding what to do
+
+    /// Who is asking, if Folio knows: the source being read and its site (sent as the Referer, as the reader would).
+    var context: (() -> (source: String, referer: URL?)?)?
+    /// Called once per site when it hard-blocks Folio (nothing the user could pass).
+    var onBlocked: ((String) -> Void)?
+    /// Sites that hard-blocked recently. No window is shown for them until the pause runs out.
+    private var blocked: [String: Date] = [:]
+    private static let blockPause: TimeInterval = 15 * 60
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var lastBlockAt: Date?
+    /// True while some site is hard-blocking Folio; reader tiles use it to say why pages fail.
+    nonisolated static var recentlyBlocked: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return lastBlockAt.map { Date().timeIntervalSince($0) < blockPause } ?? false
+    }
 
     static func site(_ u: URL) -> String {
         let parts = (u.host ?? "").split(separator: ".")
@@ -129,21 +144,44 @@ final class CloudflareSolver {
 
     func solve(_ url: URL, timeout: TimeInterval) async -> Solution? {
         let site = Self.site(url)
+        if let b = blocked[site], Date().timeIntervalSince(b) < Self.blockPause { return nil }
         if let t = pending[site] { return await t.value }
-        let t = Task<Solution?, Never> { @MainActor in
-            // Already verified recently in Folio Web? Hand that over without asking — once.
-            let have = await Self.cookies(for: site)
-            if have.contains(where: { $0.name == "cf_clearance" }),
-               (lastSilent[site].map { Date().timeIntervalSince($0) > 120 } ?? true) {
-                lastSilent[site] = Date()
-                return Solution(url: url.absoluteString, cookies: have, userAgent: WebStore.userAgent, html: "")
-            }
-            return await VerifyWindow.verify(url, site: site, timeout: timeout)
-        }
+        let t = Task<Solution?, Never> { @MainActor in await self.run(url, site: site, timeout: timeout) }
         pending[site] = t
         let s = await t.value
         pending[site] = nil
         return s
+    }
+
+    /// Look first, out of sight. A hard block ends it, a page that simply loads is handed over, and only a real
+    /// "are you human" check is shown to the user.
+    private func run(_ url: URL, site: String, timeout: TimeInterval) async -> Solution? {
+        let ctx = context?()
+        let mainSite = ctx?.referer.map(Self.site)
+        let who: String = {
+            guard let src = ctx?.source else { return site }
+            return mainSite == nil || mainSite == site ? "\(src) (\(site))" : "\(src)\u{2019}s image server (\(site))"
+        }()
+        let v = VerifyWindow(url: url, site: site, who: who, referer: ctx?.referer)
+        switch await v.probe() {
+        case .blocked:
+            v.close(); markBlocked(site, who); return nil
+        case .clear:
+            // Loaded fine here. If the engine is back for the same site soon after, what we gave it didn't help.
+            if let last = lastSilent[site], Date().timeIntervalSince(last) < 120 { v.close(); markBlocked(site, who); return nil }
+            lastSilent[site] = Date()
+            let s = await v.solution(); v.close(); return s
+        case .challenge:
+            let s = await v.askUser(timeout: timeout)
+            if s == nil, v.sawBlock { markBlocked(site, who) }
+            return s
+        }
+    }
+
+    private func markBlocked(_ site: String, _ who: String) {
+        blocked[site] = Date()
+        Self.lock.lock(); Self.lastBlockAt = Date(); Self.lock.unlock()
+        onBlocked?("\(who) is blocking Folio, so some pages or covers won\u{2019}t load. Try this series from another source.")
     }
 
     static func cookies(for site: String) async -> [HTTPCookie] {
@@ -151,95 +189,151 @@ final class CloudflareSolver {
     }
 }
 
-/// The small window that shows the blocked page so the user can pass the check. Closes itself when they have.
+/// Loads the blocked address out of sight to see what it is, and shows it to the user only when it is a check
+/// they can pass. Closes itself when they have.
 @MainActor
 final class VerifyWindow: NSObject, NSWindowDelegate, WKNavigationDelegate {
-    private var window: NSWindow?
+    enum Verdict { case clear, challenge, blocked }
+    private let window: NSWindow
     private let web: WKWebView
     private var finished: ((CloudflareSolver.Solution?) -> Void)?
     private let url: URL
     private let site: String
+    private let who: String
+    private let referer: URL?
     private var before: String?
+    private var loaded = false
+    private(set) var sawBlock = false
 
-    private init(url: URL, site: String) {
-        self.url = url; self.site = site
+    init(url: URL, site: String, who: String, referer: URL?) {
+        self.url = url; self.site = site; self.who = who; self.referer = referer
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = WebStore.store
         web = WKWebView(frame: .zero, configuration: cfg)
+        window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
+                          styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
         super.init()
         web.customUserAgent = WebStore.userAgent
         web.navigationDelegate = self
+        window.title = "Verify \(who)"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
     }
 
-    static func verify(_ url: URL, site: String, timeout: TimeInterval) async -> CloudflareSolver.Solution? {
-        let v = VerifyWindow(url: url, site: site)
-        return await withCheckedContinuation { k in
-            v.finished = { k.resume(returning: $0) }
-            Task { await v.show(timeout: timeout) }
-        }
-    }
-
-    private func show(timeout: TimeInterval) async {
+    /// Loads the page in an invisible window (so its scripts run normally) and waits to see what it is.
+    func probe() async -> Verdict {
         before = await CloudflareSolver.cookies(for: site).first { $0.name == "cf_clearance" }?.value
-        let header = NSHostingView(rootView: VerifyHeader(site: site, cancel: { [weak self] in self?.finish(nil) }))
+        let header = NSHostingView(rootView: VerifyHeader(who: who, cancel: { [weak self] in self?.finish(nil) }))
         let stack = NSStackView(views: [header, web])
         stack.orientation = .vertical; stack.spacing = 0
         header.setContentHuggingPriority(.required, for: .vertical)
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 640),
-                         styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        w.title = "Verify \(site)"
-        w.contentView = stack
-        w.isReleasedWhenClosed = false
-        w.delegate = self
-        w.level = .floating
-        w.center()
-        window = w
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        web.load(URLRequest(url: url))
-        // Watch for the pass, up to the engine's patience.
-        let deadline = Date().addingTimeInterval(timeout)
-        while finished != nil, Date() < deadline {
-            try? await Task.sleep(for: .milliseconds(700))
-            if await passed() { await succeed(); return }
+        window.contentView = stack
+        window.alphaValue = 0
+        window.ignoresMouseEvents = true
+        window.center()
+        window.orderFrontRegardless()
+        var req = URLRequest(url: url)
+        if let r = referer { req.setValue(r.absoluteString, forHTTPHeaderField: "Referer") }
+        web.load(req)
+        // Up to 20 s to load; a self-solving check gets up to 8 s more to finish on its own.
+        let deadline = Date().addingTimeInterval(20)
+        var challengeSince: Date?
+        while Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard loaded else { continue }
+            switch await classify() {
+            case .blocked: sawBlock = true; return .blocked
+            case .clear: return .clear
+            case .challenge:
+                if challengeSince == nil { challengeSince = Date() }
+                if Date().timeIntervalSince(challengeSince!) > 8 { return .challenge }
+            }
         }
-        finish(nil)
+        return loaded ? .challenge : .blocked
     }
 
-    /// Passed = a fresh clearance cookie exists and the page is no longer a challenge.
-    private func passed() async -> Bool {
-        guard let c = await CloudflareSolver.cookies(for: site).first(where: { $0.name == "cf_clearance" }), c.value != before else { return false }
-        let title = (try? await web.evaluateJavaScript("document.title") as? String)?.lowercased() ?? ""
-        return !["just a moment", "attention required", "checking", "verify"].contains { title.contains($0) }
+    private static let classifyJS = """
+    (() => {
+      const t = (document.title || '').toLowerCase();
+      const b = ((document.body && document.body.innerText) || '').toLowerCase().slice(0, 4000);
+      const q = s => document.querySelector(s) != null;
+      if (b.includes('you have been blocked') || b.includes('error 1020') || b.includes('error 1010') || b.includes('error 1015')
+          || (b.includes('access denied') && b.includes('cloudflare')) || (q('#cf-error-details') && !q('#challenge-form'))) return 'blocked';
+      if (t.includes('just a moment') || t.includes('checking your browser') || q('#challenge-form') || q('#challenge-stage')
+          || q('.cf-turnstile') || q('iframe[src*="challenges.cloudflare.com"]')) return 'challenge';
+      return 'clear';
+    })()
+    """
+
+    private func classify() async -> Verdict {
+        switch (try? await web.evaluateJavaScript(Self.classifyJS)) as? String {
+        case "blocked": return .blocked
+        case "challenge": return .challenge
+        default: return .clear
+        }
     }
 
-    private func succeed() async {
+    func solution() async -> CloudflareSolver.Solution {
         let html = (try? await web.evaluateJavaScript("document.documentElement.outerHTML") as? String) ?? ""
-        let cookies = await CloudflareSolver.cookies(for: site)
-        finish(CloudflareSolver.Solution(url: web.url?.absoluteString ?? url.absoluteString, cookies: cookies,
-                                         userAgent: WebStore.userAgent, html: html))
+        return CloudflareSolver.Solution(url: web.url?.absoluteString ?? url.absoluteString,
+                                         cookies: await CloudflareSolver.cookies(for: site),
+                                         userAgent: WebStore.userAgent, html: html)
     }
+
+    /// Shows the check (already loaded) and waits until it's passed, cancelled, turns into a block, or times out.
+    func askUser(timeout: TimeInterval) async -> CloudflareSolver.Solution? {
+        await withCheckedContinuation { k in
+            finished = { k.resume(returning: $0) }
+            window.alphaValue = 1
+            window.ignoresMouseEvents = false
+            window.level = .floating
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            Task {
+                let deadline = Date().addingTimeInterval(timeout)
+                while finished != nil, Date() < deadline {
+                    try? await Task.sleep(for: .milliseconds(700))
+                    switch await classify() {
+                    case .blocked: sawBlock = true; finish(nil); return
+                    case .clear: if await freshClearance() { finish(await solution()); return }
+                    case .challenge: break
+                    }
+                }
+                finish(nil)
+            }
+        }
+    }
+
+    private func freshClearance() async -> Bool {
+        guard let c = await CloudflareSolver.cookies(for: site).first(where: { $0.name == "cf_clearance" }) else { return false }
+        return c.value != before
+    }
+
+    func close() { window.delegate = nil; web.stopLoading(); window.orderOut(nil) }
 
     private func finish(_ s: CloudflareSolver.Solution?) {
         guard let f = finished else { return }
         finished = nil
-        window?.orderOut(nil)
-        window = nil
+        close()
         f(s)
     }
 
     func windowWillClose(_ notification: Notification) { finish(nil) }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded = true }
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) { loaded = true }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) { loaded = true }
 }
 
 private struct VerifyHeader: View {
-    let site: String
+    let who: String
     let cancel: () -> Void
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "checkmark.shield").font(.system(size: 18)).foregroundStyle(Theme.ink)
             VStack(alignment: .leading, spacing: 3) {
                 Text("Verify you\u{2019}re human").font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text("\(site) wants a check before Folio can load it. Complete it below. This window closes when you pass.")
+                Text("\(who) wants a check before Folio can load it. Complete it below. This window closes when you pass.")
                     .font(.system(size: 12.5)).foregroundStyle(Theme.dim).fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)

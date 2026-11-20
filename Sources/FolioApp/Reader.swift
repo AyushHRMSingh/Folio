@@ -461,7 +461,7 @@ final class ReaderModel: ObservableObject {
 
     func show(toast t: String) {
         toastTask?.cancel()
-        withAnimation(.spring(response: 0.3)) { toast = t }
+        withAnimation(.easeOut(duration: 0.15)) { toast = t }
         toastTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.6))
             guard !Task.isCancelled else { return }

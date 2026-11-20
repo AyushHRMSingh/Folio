@@ -12,8 +12,12 @@ final class AppModel: ObservableObject {
     let library = Library()
     let extensions = ExtensionsModel()
     let search = GlobalSearchModel()
+    /// PIN / Touch ID lock (Settings › Privacy).
+    let lock: LockModel
 
     init() {
+        lock = LockModel(library: library)
+        lock.app = self
         extensions.app = self
         library.onDownloadError = { [weak self] m in self?.error = m }
         applyAppearance()
@@ -21,6 +25,12 @@ final class AppModel: ObservableObject {
         autoUpdateOnLaunch()
         autoBackupOnLaunch()
         configureCloudflare()
+        CloudflareSolver.shared.context = { [weak self] in
+            guard let r = self?.reader, let lib = self?.library else { return nil }
+            let web = (r.series.webURL).flatMap(URL.init(string:))
+            return (lib.source(r.series.sourceID)?.name ?? "This source", web.flatMap { URL(string: "\($0.scheme ?? "https")://\($0.host ?? "")/") })
+        }
+        CloudflareSolver.shared.onBlocked = { [weak self] m in self?.status = m }
         Task { [weak self] in
             // Folio's own Cloudflare helper (the user verifies in a small window) must be listening before the engine
             // starts, because the engine is told its address at launch.
@@ -236,7 +246,11 @@ final class Images {
     func failure(_ key: String) -> String? { failures[key] }
 
     static func reason(_ e: Error) -> String {
-        if e is CloudflareError { return "Cloudflare check needed. Click to verify." }
+        if e is CloudflareError || (CloudflareSolver.recentlyBlocked && CloudflareError.matches("\(e)")) {
+            return CloudflareSolver.recentlyBlocked ? "The image server is blocking Folio. Try another source for this series." : "Cloudflare check needed. Click to verify."
+        }
+        if let p = e as? PausedError { return p.errorDescription ?? "Paused." }
+        if e is RateLimitedError { return "The site says Folio is asking too often. Folio paused this source for a while." }
         if let u = e as? URLError {
             switch u.code {
             case .notConnectedToInternet, .networkConnectionLost, .dataNotAllowed: return "No internet connection. Click to retry."
@@ -309,7 +323,13 @@ final class Images {
             let e = Load(priority)
             e.task = Task { [weak self, weak e] in
                 var d: Data?
-                do { d = try await FetchPriority.$current.withValue(priority) { try await load() }; self?.failures[key] = nil }
+                do {
+                    // Dev only: FOLIO_DEBUG_FAIL makes every second page fail as a paused source would (to check the message).
+                    if ProcessInfo.processInfo.environment["FOLIO_DEBUG_FAIL"] != nil, key.hasSuffix("2.png") || key.hasSuffix("2.jpg") {
+                        throw PausedError(until: Date().addingTimeInterval(90))
+                    }
+                    d = try await FetchPriority.$current.withValue(priority) { try await load() }; self?.failures[key] = nil
+                }
                 catch { if !Task.isCancelled { self?.failures[key] = Images.reason(error) } }
                 var img: NSImage?
                 if let d, !Task.isCancelled {

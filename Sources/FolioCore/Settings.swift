@@ -256,6 +256,8 @@ public struct FolioSettings: Codable, Sendable {
     public var parallelDownloads = 2
     // Privacy & look
     public var incognito = false
+    /// PIN / Touch ID lock. Nil = off.
+    public var appLock: AppLock?
     public var appearance: AppearanceMode = .system
     // Network
     /// FlareSolverr address (e.g. http://127.0.0.1:8191/v1). Empty = off. Lets the engine pass Cloudflare checks.
@@ -313,6 +315,7 @@ public struct FolioSettings: Codable, Sendable {
         deleteAfterRead = c.lenient(Bool.self, .deleteAfterRead) ?? false
         parallelDownloads = c.lenient(Int.self, .parallelDownloads) ?? 2
         incognito = c.lenient(Bool.self, .incognito) ?? false
+        appLock = c.lenient(AppLock.self, .appLock)
         appearance = c.lenient(AppearanceMode.self, .appearance) ?? .system
         flareSolverrURL = c.lenient(String.self, .flareSolverrURL) ?? ""
     }

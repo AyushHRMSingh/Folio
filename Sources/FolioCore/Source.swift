@@ -40,7 +40,7 @@ public extension Source {
         switch page {
         case .file(let u): return try Data(contentsOf: u)
         case .remote(let u):
-            return try await ImageFetch.data(key: u.absoluteString) {
+            return try await ImageFetch.data(key: u.absoluteString, group: u.host) {
                 let (d, h) = try await Net.data(for: URLRequest(url: u))
                 guard (200..<300).contains(h.statusCode) else { throw FolioError("Couldn't load image (HTTP \(h.statusCode))") }
                 return d

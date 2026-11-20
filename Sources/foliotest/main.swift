@@ -174,6 +174,31 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil) { let p = Process(); 
     let hBefore = lib.recents.count, nBefore = lib.entries.count
     _ = try? await lib.track(Series(sourceID: "local", url: "Beta Tale", title: "Beta Tale"))
     check(lib.recents.count == hBefore && lib.entries.count == nBefore, "incognito: track() adds no history entry")
+    let gdir = local.appendingPathComponent("Gamma Run")
+    for c in 1...2 { write(png("G\(c)"), gdir.appendingPathComponent("Chapter \(c)/1.png")) }
+    let bt = Series(sourceID: "local", url: "Gamma Run", title: "Gamma Run")
+    _ = try? await lib.track(bt)
+    check(lib.entries.count == nBefore, "incognito: reading a new series isn't written to the library")
+    if let t = lib.entry(bt.id) {
+        check(t.chapters.count == 2 && lib.next(after: t.chapters[0].chapter.url, in: bt.id) != nil,
+              "incognito: the reader still finds the next chapter (endless scrolling works)")
+        _ = try? await lib.add(bt)
+        check(lib.entries.contains { $0.id == bt.id && $0.isSaved }, "incognito: saving a series being read keeps it")
+        lib.remove(bt.id)
+    } else { check(false, "incognito: a series being read is kept in memory") }
+    try? FileManager.default.removeItem(at: gdir)
+
+    // ---------- app lock (PIN kept only as a salted hash in settings; never in backups)
+    check(AppLock.make(pin: "12") == nil && AppLock.make(pin: "12a4") == nil && AppLock.make(pin: "123456789") == nil,
+          "lock: PIN must be 4–8 digits")
+    let lk = AppLock.make(pin: "4821")!
+    check(lk.matches("4821") && !lk.matches("4822") && !lk.matches("482"), "lock: right PIN opens, wrong ones don't")
+    check(!lk.hash.contains("4821") && lk.length == 4, "lock: the PIN itself is not stored")
+    check(AppLock.make(pin: "4821")!.hash != lk.hash, "lock: salted (same PIN, different hash)")
+    let lk2 = try! JSONDecoder().decode(AppLock.self, from: JSONEncoder().encode(lk))
+    check(lk2 == lk && lk2.matches("4821"), "lock: survives saving")
+    let lockedSettings = { var s = FolioSettings(); s.appLock = lk; return s }()
+    check(try! JSONDecoder().decode(FolioSettings.self, from: JSONEncoder().encode(lockedSettings)).appLock == lk, "lock: kept in settings")
     let cat = e.id
     lib.setCategories(e.id, [cat, "x", cat, "x", "y"])
     check(lib.entry(e.id)!.categoryIDs == [cat, "x", "y"], "setCategories de-duplicates, keeps order")
@@ -461,9 +486,30 @@ func network() async throws {
     let cfg = URLSessionConfiguration.ephemeral; cfg.protocolClasses = [Flaky.self]
     let fs = URLSession(configuration: cfg)
     let u = URLRequest(url: URL(string: "http://example.test/x")!)
-    Flaky.script = [(503, "x"), (429, "x")]; Flaky.hits = 0
+    Flaky.script = [(503, "x"), (502, "x")]; Flaky.hits = 0
     let (d1, h1) = try await Net.data(for: u, session: fs)
-    check(h1.statusCode == 200 && String(decoding: d1, as: UTF8.self) == "ok" && Flaky.hits == 3, "net: retries 503/429 then succeeds (\(Flaky.hits) attempts)")
+    check(h1.statusCode == 200 && String(decoding: d1, as: UTF8.self) == "ok" && Flaky.hits == 3, "net: retries 503/502 then succeeds (\(Flaky.hits) attempts)")
+    Flaky.script = [(429, "slow down")]; Flaky.hits = 0
+    var saw429 = false
+    do { _ = try await Net.data(for: u, session: fs) } catch is RateLimitedError { saw429 = true }
+    check(saw429 && Flaky.hits == 1, "net: 429 stops at once, never retried")
+    // A source that keeps failing is left alone; nothing is sent while it rests; one success clears it.
+    let br = SourceBreaker()
+    for _ in 0..<(SourceBreaker.threshold - 1) { br.failed("s", FolioError("HTTP 500")) }
+    check((try? br.check("s")) != nil, "breaker: under the limit, requests still go")
+    br.failed("s", FolioError("HTTP 500"))
+    var paused = false
+    do { try br.check("s") } catch is PausedError { paused = true } catch {}
+    check(paused, "breaker: \(SourceBreaker.threshold) failures in a row pause the source")
+    check((try? br.check("other")) != nil, "breaker: other sources are unaffected")
+    for _ in 0..<10 { br.failed("m", FolioError("Couldn't load image (HTTP 404)")) }
+    check((try? br.check("m")) != nil, "breaker: missing images (404) don't pause a source")
+    br.failed("r", RateLimitedError())
+    var pausedR = false
+    do { try br.check("r") } catch is PausedError { pausedR = true } catch {}
+    check(pausedR, "breaker: a 429 pauses the source at once")
+    br.succeeded("s")
+    check((try? br.check("s")) != nil, "breaker: a success clears the pause")
     Flaky.script = [(404, "no")]; Flaky.hits = 0
     check(try await Net.data(for: u, session: fs).1.statusCode == 404 && Flaky.hits == 1, "net: 404 isn't retried")
     Flaky.script = [(503, "<title>Just a moment...</title><div id=cf-chl>")]; Flaky.hits = 0
@@ -843,6 +889,12 @@ do {
     check(kl.settings.servers.first?.password == "hunter2", "backup leaves live password alone")
     try kl.restore(bk)
     check(kl.settings.servers.first?.password == "hunter2", "restore keeps existing password for same server")
+    kl.settings.appLock = AppLock.make(pin: "9090")
+    let bk2 = try kl.backupData()
+    check(!(String(data: bk2, encoding: .utf8) ?? "").contains(kl.settings.appLock!.hash), "backup has no app lock")
+    let here = kl.settings.appLock
+    try kl.restore(bk2)
+    check(kl.settings.appLock == here, "restore keeps this Mac's app lock")
 }
 
 do {

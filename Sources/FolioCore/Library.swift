@@ -207,7 +207,10 @@ public final class Library: ObservableObject {
 
     // MARK: library membership
 
-    public func entry(_ id: String) -> LibraryEntry? { entries.first { $0.id == id } }
+    public func entry(_ id: String) -> LibraryEntry? { entries.first { $0.id == id } ?? passing[id] }
+    /// Incognito: series being read that aren't in the library or history. Kept in memory only, so the reader can
+    /// still find chapters (next, previous, endless scrolling between chapters), and never written to disk.
+    private var passing: [String: LibraryEntry] = [:]
     /// In the library (saved) — as opposed to merely having been read.
     public func contains(_ s: Series) -> Bool { entry(s.id)?.isSaved == true }
     public var savedEntries: [LibraryEntry] { entries.filter { $0.isSaved && !isBlacklisted($0.series) } }
@@ -236,7 +239,7 @@ public final class Library: ObservableObject {
         if let e = entry(s.id) { return e }     // raced with another add
         var e = LibraryEntry(series: full, chapters: chs.map { ChapterState(chapter: $0) }, lastChecked: Date())
         e.saved = saved
-        if !persist { return e }
+        if !persist { passing[e.id] = e; return e }
         entries.append(e)
         scheduleSave()
         return e
@@ -385,6 +388,10 @@ public final class Library: ObservableObject {
 
     func replace(_ e: LibraryEntry) {
         if let i = entries.firstIndex(where: { $0.id == e.id }) { entries[i] = e; scheduleSave() }
+        else if passing[e.id] != nil {
+            // Saving a series you were reading incognito puts it in the library for real.
+            if e.isSaved { passing[e.id] = nil; entries.append(e); scheduleSave() } else { passing[e.id] = e }
+        }
     }
 
     func update(_ id: String, _ url: String, _ f: (inout ChapterState, inout LibraryEntry) -> Void) {

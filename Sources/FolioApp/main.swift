@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // with nothing to go back to it does nothing.
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             MainActor.assumeIsolated {
-                guard e.keyCode == 53, let self, let m = self.model,
+                guard e.keyCode == 53, let self, let m = self.model, !m.lock.locked,
                       NSApp.keyWindow === self.window, !(self.window.firstResponder is NSText) else { return e }
                 if let r = m.reader {
                     if r.popover != nil { r.popover = nil } else { r.close() }
@@ -92,6 +92,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         appMenu.addItem(withTitle: "About Folio", action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)), keyEquivalent: "")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Settings…", action: #selector(goSettings), keyEquivalent: ",")
+        appMenu.addItem(withTitle: "Lock Folio", action: #selector(lockNow), keyEquivalent: "l")
         appMenu.addItem(.separator())
         appMenu.addItem(withTitle: "Quit Folio", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
         appItem.submenu = appMenu
@@ -164,7 +165,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func menuZoomIn() { model.reader?.zoomIn() }
     @objc func menuZoomOut() { model.reader?.zoomOut() }
     @objc func menuZoomReset() { model.reader?.resetZoom() }
+    @objc func lockNow() { model.lock.lock() }
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        if model?.lock.locked == true { return false }                 // nothing behind the lock screen
+        if item.action == #selector(lockNow) { return model?.lock.enabled == true }
         let readerActions: [Selector] = [#selector(menuControls), #selector(menuReadingSettings), #selector(menuChapters),
                                          #selector(menuZoomIn), #selector(menuZoomOut), #selector(menuZoomReset)]
         if let a = item.action, readerActions.contains(a) { return model?.reader != nil }
@@ -190,6 +194,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         ⌘[  or Esc  Back
         ⌘F / ⌘K  Search
         ⇧⌘R  Update library
+        ⌘L  Lock Folio (with a PIN set)
 
         In the reader
         Space / ↓ ↑  scroll

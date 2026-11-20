@@ -147,17 +147,84 @@ public struct CloudflareError: LocalizedError, Sendable {
     }
 }
 
+// MARK: - Backing off a failing source
+
+/// The site said "too many requests". Folio stops asking that source for a while.
+public struct RateLimitedError: LocalizedError, Sendable {
+    public var retryAfter: TimeInterval?
+    public init(retryAfter: TimeInterval? = nil) { self.retryAfter = retryAfter }
+    public var errorDescription: String? { "The site says Folio is asking too often (HTTP 429)." }
+}
+
+/// A source is resting after repeated failures; nothing was sent.
+public struct PausedError: LocalizedError, Sendable {
+    public let until: Date
+    public init(until: Date) { self.until = until }
+    public var errorDescription: String? {
+        let m = max(1, Int((until.timeIntervalSinceNow / 60).rounded(.up)))
+        return "This source keeps failing, so Folio is giving it a break. It will try again in \(m == 1 ? "a minute" : "\(m) minutes")."
+    }
+}
+
+/// Stops Folio from hammering a source that keeps failing (which is how sites decide to block you).
+/// After `threshold` failures in a row, every request to that source fails at once, without touching the network,
+/// for 1 minute, then 2, 4, up to 10 while failures continue. A "too many requests" answer pauses it at once.
+/// One success clears it. Missing images (404), cancellations and being offline don't count.
+public final class SourceBreaker: @unchecked Sendable {
+    public static let shared = SourceBreaker()
+    public static let threshold = 4
+    private struct State { var fails = 0; var trips = 0; var until: Date? }
+    private let lock = NSLock()
+    private var states: [String: State] = [:]
+
+    public init() {}
+
+    public func check(_ group: String) throws {
+        lock.lock(); defer { lock.unlock() }
+        if let u = states[group]?.until, u > Date() { throw PausedError(until: u) }
+    }
+
+    public func succeeded(_ group: String) {
+        lock.lock(); states[group] = nil; lock.unlock()
+    }
+
+    public func failed(_ group: String, _ e: Error) {
+        guard Self.counts(e) else { return }
+        lock.lock(); defer { lock.unlock() }
+        var s = states[group] ?? State()
+        if let u = s.until, u > Date() { return }          // already resting
+        s.fails += 1
+        let limited = e as? RateLimitedError
+        if s.fails >= Self.threshold || limited != nil {
+            s.trips += 1
+            var secs = min(60 * pow(2, Double(s.trips - 1)), 600)
+            if let ra = limited?.retryAfter { secs = max(secs, min(ra, 3600)) }
+            s.until = Date().addingTimeInterval(secs)
+            s.fails = 0
+        }
+        states[group] = s
+    }
+
+    static func counts(_ e: Error) -> Bool {
+        if e is CancellationError || e is PausedError { return false }
+        if let u = e as? URLError, [.cancelled, .notConnectedToInternet, .dataNotAllowed].contains(u.code) { return false }
+        if ((e as? LocalizedError)?.errorDescription ?? "").contains("HTTP 404") { return false }
+        return true
+    }
+}
+
 // MARK: - Retrying fetch
 
 public enum Net {
-    static let retryableStatus: Set<Int> = [408, 425, 429, 500, 502, 503, 504]
+    // 429 is not here: "too many requests" is answered by stopping (RateLimitedError), never by asking again.
+    static let retryableStatus: Set<Int> = [408, 425, 500, 502, 503, 504]
     static let retryableURLErrors: Set<URLError.Code> = [
         .timedOut, .networkConnectionLost, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed,
         .notConnectedToInternet, .secureConnectionFailed, .resourceUnavailable,
     ]
 
-    /// GET/POST with bounded retries on transient failures (timeouts, dropped connections, 429/5xx),
-    /// honouring `Retry-After`. Cloudflare check pages are never retried: they won't fix themselves.
+    /// GET/POST with bounded retries on transient failures (timeouts, dropped connections, 5xx),
+    /// honouring `Retry-After`. A 429 throws `RateLimitedError` at once. Cloudflare check pages are never retried: they won't fix themselves.
     public static func data(for request: URLRequest, session: URLSession = .folio, attempts: Int = 3) async throws -> (Data, HTTPURLResponse) {
         var last: Error = URLError(.unknown)
         for n in 0..<attempts {
@@ -175,6 +242,7 @@ public enum Net {
                     try await backoff(n, retryAfter: h.value(forHTTPHeaderField: "Retry-After"))
                     continue
                 }
+                if h.statusCode == 429 { throw RateLimitedError(retryAfter: h.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)) }
                 return (d, h)
             } catch let e as URLError where retryableURLErrors.contains(e.code) && n < attempts - 1 {
                 last = e
@@ -293,18 +361,28 @@ public final class DiskCache: @unchecked Sendable {
 public enum ImageFetch {
     /// Disk cache → scheduler (bounded, prioritised) → network, then store. Anything that isn't
     /// an image (an HTML error or challenge page) is never cached and is reported properly.
-    public static func data(key: String, maxAge: TimeInterval? = nil,
+    /// `group` names the source (or site) for `SourceBreaker`: a source that keeps failing is left alone for a while.
+    public static func data(key: String, group: String? = nil, maxAge: TimeInterval? = nil,
                             _ load: @Sendable () async throws -> Data) async throws -> Data {
         if let d = DiskCache.shared.get(key, maxAge: maxAge) { return d }
-        let d = try await FetchScheduler.shared.run(key: key, priority: FetchPriority.current) {
-            try await load()
+        if let group { try SourceBreaker.shared.check(group) }
+        do {
+            let d = try await FetchScheduler.shared.run(key: key, priority: FetchPriority.current) {
+                // Checked again after waiting in line: the source may have been paused meanwhile.
+                if let group { try SourceBreaker.shared.check(group) }
+                return try await load()
+            }
+            if looksLikeImage(d) {
+                DiskCache.shared.set(key, d)
+            } else if CloudflareError.matches(String(decoding: d.prefix(4096), as: UTF8.self)) {
+                throw CloudflareError()
+            }
+            if let group { SourceBreaker.shared.succeeded(group) }
+            return d
+        } catch {
+            if let group { SourceBreaker.shared.failed(group, error) }
+            throw error
         }
-        if looksLikeImage(d) {
-            DiskCache.shared.set(key, d)
-        } else if CloudflareError.matches(String(decoding: d.prefix(4096), as: UTF8.self)) {
-            throw CloudflareError()
-        }
-        return d
     }
 
     static func looksLikeImage(_ d: Data) -> Bool {

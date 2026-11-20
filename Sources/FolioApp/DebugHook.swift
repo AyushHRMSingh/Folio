@@ -83,11 +83,14 @@ enum DebugHook {
             case "hidesaved": app.library.settings.hideSavedInBrowse = p[1] == "on"
             case "notice": app.library.settings.extensionsNoticeAccepted = p[1] == "on" ? Date() : nil
             case "incognito": app.library.settings.incognito = p[1] == "on"
+            case "pin": if p[1] == "off" { app.lock.turnOff() } else { _ = app.lock.setPIN(p[1]); app.library.settings.appLock?.touchID = false }
             default: break
             }
         case "gsearch":        // gsearch:<query>
             app.sidebar = .search; app.search.query = arg; app.search.run(arg, library: app.library)
         case "close": app.reader?.close()
+        case "lock": app.lock.lock()                    // lock → the lock screen (needs set:pin=<digits>)
+        case "type-pin": app.lock.debugType(arg)        // type-pin:<digits> → as if typed on the lock screen
         case "web": app.openWeb(arg, title: "QA")       // web:<url> → the in-app web window
         case "blacklist":      // blacklist:<title substring> → blacklist a library series
             if let e = app.library.entries.first(where: { $0.series.title.localizedCaseInsensitiveContains(arg) }) { app.library.blacklist(e.series) }

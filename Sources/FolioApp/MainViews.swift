@@ -13,6 +13,7 @@ struct RootView: View {
             if let r = app.reader {
                 ReaderView(model: r).id(ObjectIdentifier(r)).transition(.opacity).zIndex(1)
             }
+            LockOverlay(model: app.lock).zIndex(10)
         }
         .frame(minWidth: 760, minHeight: 520)      // SwiftUI resets the window's own minimum, so the content states it
         .background(Theme.bg)
@@ -701,7 +702,9 @@ struct BrowseView: View {
                 results += fresh
                 for s in fresh where library.contains(s) { savedAtLoad.insert(s.id) }
                 page = p
-                hasMore = r.hasNextPage && !r.series.isEmpty
+                // A page with nothing new ends it: some sites repeat the last page forever, which would otherwise
+                // turn into an endless run of requests.
+                hasMore = r.hasNextPage && !fresh.isEmpty
                 prefetchCovers(fresh)
             } catch {
                 if AppModel.isCancellation(error) { return }      // the screen went away; a later visit continues
