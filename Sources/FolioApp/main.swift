@@ -47,7 +47,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // with nothing to go back to it does nothing.
         escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             MainActor.assumeIsolated {
-                guard e.keyCode == 53, let self, let m = self.model, !m.lock.locked,
+                guard e.keyCode == 53, let self, let m = self.model, !m.lock.locked, !m.privacy.covered,
                       NSApp.keyWindow === self.window, !(self.window.firstResponder is NSText) else { return e }
                 if let r = m.reader {
                     if r.popover != nil { r.popover = nil } else { r.close() }

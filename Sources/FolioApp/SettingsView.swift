@@ -286,7 +286,7 @@ struct SettingsPrivacy: View {
                                selection: Binding(get: { l.after }, set: { library.settings.appLock?.after = $0 }))
                 }
             }
-            SetRow(label: "Hide when in background", hint: "Folio goes black while another app is in front, so nothing shows in the app switcher, Mission Control or beside other windows.") {
+            SetRow(label: "Hide when in background", hint: "Folio goes black while another app is in front, so nothing shows in the app switcher, Mission Control or beside other windows. Click or press a key to show it again.") {
                 MonoSwitch(isOn: $library.settings.privacyScreen)
             }
             SetRow(label: "Incognito", hint: "While on, Folio doesn't save reading progress or history.") { MonoSwitch(isOn: $library.settings.incognito) }

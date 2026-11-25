@@ -94,6 +94,7 @@ final class LockModel: ObservableObject {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] e in
             MainActor.assumeIsolated {
                 guard let self, self.locked else { return e }
+                if let p = self.app?.privacy, p.covered { p.uncover(); return nil }    // first key only reveals the lock screen
                 let mods = e.modifierFlags.intersection([.command, .control, .option])
                 if mods == .command, e.charactersIgnoringModifiers == "q" { return e }     // quitting is always allowed
                 if mods.isEmpty { self.key(e) }
@@ -396,12 +397,15 @@ struct SetPINSheet: View {
 
 /// "Hide when in background": while another app is in front, every Folio window is covered in plain black, so
 /// nothing shows in the app switcher, Mission Control, screenshots of the desktop or beside other apps.
+/// Coming back to Folio (⌘-Tab, Dock) keeps it black: only a click or a key press in Folio shows it again, and
+/// that first click or key does nothing else.
 /// It is AppKit, not SwiftUI, so the cover is drawn before macOS takes its snapshot of the window.
 @MainActor
 final class PrivacyScreen {
     private let library: Library
     private var covers: [(window: NSWindow, view: NSView)] = []
     private var observers: [NSObjectProtocol] = []
+    private var monitor: Any?
     /// The QA harness runs Folio in the background on purpose; there it only covers when asked (`privacy:on`).
     private let automatic = ProcessInfo.processInfo.environment["FOLIO_DEBUG"] == nil
 
@@ -413,9 +417,6 @@ final class PrivacyScreen {
                 MainActor.assumeIsolated { if let self, self.automatic { self.cover() } }
             })
         }
-        observers.append(nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.uncover() }
-        })
     }
 
     var covered: Bool { !covers.isEmpty }
@@ -430,11 +431,24 @@ final class PrivacyScreen {
             covers.append((w, v))
             w.displayIfNeeded()
         }
+        if covered, monitor == nil {
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown, .keyDown, .scrollWheel]) { [weak self] e in
+                MainActor.assumeIsolated {
+                    guard let self, self.covered else { return e }
+                    if e.type == .keyDown, e.modifierFlags.contains(.command), e.charactersIgnoringModifiers == "q" { return e }
+                    // A scroll over the black window while another app is in front is not coming back to Folio.
+                    if e.type == .scrollWheel && !NSApp.isActive { return nil }
+                    self.uncover()
+                    return nil                           // the interaction that reveals Folio does nothing else
+                }
+            }
+        }
     }
 
     func uncover() {
         for c in covers { c.view.removeFromSuperview() }
         covers = []
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
     }
 
     private final class BlackView: NSView {
@@ -446,6 +460,9 @@ final class PrivacyScreen {
         required init?(coder: NSCoder) { nil }
         override var isOpaque: Bool { true }
         override func draw(_ dirtyRect: NSRect) { NSColor.black.setFill(); dirtyRect.fill() }
-        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { false }   // a click only brings Folio back
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { false }
+        override func mouseDown(with event: NSEvent) {}          // clicks never reach what's underneath
+        override func rightMouseDown(with event: NSEvent) {}
+        override func scrollWheel(with event: NSEvent) {}
     }
 }
