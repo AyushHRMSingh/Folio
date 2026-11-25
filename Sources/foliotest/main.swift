@@ -199,6 +199,10 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil) { let p = Process(); 
     check(lk2 == lk && lk2.matches("4821"), "lock: survives saving")
     let lockedSettings = { var s = FolioSettings(); s.appLock = lk; return s }()
     check(try! JSONDecoder().decode(FolioSettings.self, from: JSONEncoder().encode(lockedSettings)).appLock == lk, "lock: kept in settings")
+    let tl = AppLock.touchIDOnly()
+    check(!tl.usesPIN && lk.usesPIN && !tl.matches("") && !tl.matches("0000"), "lock: Touch ID only has no PIN that could open it")
+    check(try! JSONDecoder().decode(AppLock.self, from: JSONEncoder().encode(tl)) == tl, "lock: Touch ID only survives saving")
+    check(try! JSONDecoder().decode(FolioSettings.self, from: Data("{}".utf8)).privacyScreen, "privacy screen on by default")
     let cat = e.id
     lib.setCategories(e.id, [cat, "x", cat, "x", "y"])
     check(lib.entry(e.id)!.categoryIDs == [cat, "x", "y"], "setCategories de-duplicates, keeps order")

@@ -22,6 +22,8 @@ final class LockModel: ObservableObject {
     private var wrong = 0
     /// True while a Touch ID or password prompt is up: it takes focus from Folio, which must not re-lock.
     private var authenticating = false
+    /// When the last Touch ID prompt closed: coming back from it must not open another one straight away.
+    private var promptClosed = Date.distantPast
     private var observers: [NSObjectProtocol] = []
 
     init(library: Library) {
@@ -51,7 +53,9 @@ final class LockModel: ObservableObject {
     static var touchIDAvailable: Bool {
         LAContext().canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: nil)
     }
-    var offersTouchID: Bool { (settings?.touchID ?? false) && Self.touchIDAvailable }
+    /// Touch ID–only lock (no PIN).
+    var pinless: Bool { settings.map { !$0.usesPIN } ?? false }
+    var offersTouchID: Bool { (pinless || (settings?.touchID ?? false)) && Self.touchIDAvailable }
 
     // MARK: when to lock
 
@@ -65,7 +69,7 @@ final class LockModel: ObservableObject {
         defer { backgroundSince = nil }
         guard enabled, !authenticating else { return }
         if !locked, let since = backgroundSince, Date().timeIntervalSince(since) >= TimeInterval(settings?.after.rawValue ?? 0) { lock() }
-        if locked, offersTouchID, waitUntil == nil { touchID() }
+        if locked, offersTouchID, waitUntil == nil, Date().timeIntervalSince(promptClosed) > 2 { touchID() }
     }
 
     func lock() {
@@ -102,7 +106,7 @@ final class LockModel: ObservableObject {
         switch e.keyCode {
         case 51, 117: if !typed.isEmpty { typed.removeLast() }           // delete
         case 53: typed = ""                                              // esc
-        case 36, 76: submit()                                            // return
+        case 36, 76: if pinless { touchID() } else { submit() }         // return
         default:
             guard let c = e.characters, c.count == 1, let ch = c.first, ch.isASCII, ch.isNumber else { return }
             type(String(ch))
@@ -111,7 +115,7 @@ final class LockModel: ObservableObject {
 
     /// One digit (keyboard or the on-screen pad).
     func type(_ d: String) {
-        guard locked, !checking, typed.count < AppLock.digits.upperBound else { return }
+        guard locked, !pinless, !checking, typed.count < AppLock.digits.upperBound else { return }
         if let w = waitUntil, w > Date() { return }
         typed += d
         if message == "Wrong PIN" { message = nil }
@@ -148,14 +152,42 @@ final class LockModel: ObservableObject {
     // MARK: Touch ID and "forgot PIN"
 
     func touchID() {
-        guard locked, offersTouchID, !authenticating else { return }
+        guard locked, !authenticating else { return }
+        guard offersTouchID else { if pinless { macPassword() }; return }      // no Touch ID right now: the Mac password
         authenticating = true
         let ctx = LAContext()
-        ctx.localizedFallbackTitle = ""          // the PIN is the fallback, on Folio's own screen
+        ctx.localizedFallbackTitle = ""          // the fallback is on Folio's own screen (PIN, or "Use Mac Password")
         ctx.evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "unlock your library") { ok, _ in
             Task { @MainActor in
                 self.authenticating = false
+                self.promptClosed = Date()
                 if ok { self.unlock() }
+            }
+        }
+    }
+
+    /// Touch ID–only lock: the Mac's password (or Touch ID) unlocks too, e.g. with the lid closed.
+    func macPassword() {
+        guard locked, !authenticating else { return }
+        authenticating = true
+        LAContext().evaluatePolicy(.deviceOwnerAuthentication, localizedReason: "unlock your library") { ok, _ in
+            Task { @MainActor in
+                self.authenticating = false
+                self.promptClosed = Date()
+                if ok { self.unlock() }
+            }
+        }
+    }
+
+    /// Turn on the Touch ID–only lock, after one successful touch (so it is known to work).
+    func setTouchIDOnly() {
+        guard Self.touchIDAvailable, !authenticating else { return }
+        authenticating = true
+        LAContext().evaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, localizedReason: "lock Folio with Touch ID") { ok, _ in
+            Task { @MainActor in
+                self.authenticating = false
+                guard ok else { return }
+                self.library.settings.appLock = AppLock.touchIDOnly(after: self.settings?.after ?? .immediately)
             }
         }
     }
@@ -187,6 +219,8 @@ final class LockModel: ObservableObject {
 
     /// Dev only (QA harness): type a PIN as if from the keyboard.
     func debugType(_ s: String) { for c in s { type(String(c)) } }
+    /// Dev only (QA harness): a Touch ID–only lock without asking for a touch.
+    func debugSetTouchIDOnly() { library.settings.appLock = .touchIDOnly() }
 }
 
 /// Covers the whole window while locked. Always in the view tree so it can watch the model.
@@ -208,21 +242,38 @@ private struct LockScreen: View {
             FolioMark().frame(width: 104)
             Text(".folio").font(.system(size: 22, weight: .bold, design: .monospaced)).tracking(-0.8).foregroundStyle(Theme.ink)
                 .padding(.top, 10)
-            dots.padding(.top, 40)
-                .modifier(Shake(amount: CGFloat(model.shakes)))
-            Text(status).font(.system(size: 13.5)).foregroundStyle(model.message == nil && model.waitUntil == nil ? Theme.faint : Theme.dim)
-                .padding(.top, 18).frame(height: 20)
-            pad.padding(.top, 26)
-            HStack(spacing: 14) {
-                if model.offersTouchID {
-                    Button { model.touchID() } label: {
-                        Label("Use Touch ID", systemImage: "touchid").font(.system(size: 14))
+            if model.pinless {
+                Image(systemName: "touchid").font(.system(size: 44, weight: .ultraLight)).foregroundStyle(Theme.dim)
+                    .padding(.top, 44)
+                Text("Folio is locked").font(.system(size: 13.5)).foregroundStyle(Theme.faint)
+                    .padding(.top, 16).frame(height: 20)
+                HStack(spacing: 14) {
+                    if model.offersTouchID {
+                        Button { model.touchID() } label: {
+                            Label("Unlock with Touch ID", systemImage: "touchid").font(.system(size: 14))
+                        }
+                        .buttonStyle(.monoPrimary)
                     }
-                    .buttonStyle(.mono)
+                    TextAction(title: "Use Mac password") { model.macPassword() }
                 }
-                TextAction(title: "Forgot PIN?") { model.forgot() }
+                .padding(.top, 26)
+            } else {
+                dots.padding(.top, 40)
+                    .modifier(Shake(amount: CGFloat(model.shakes)))
+                Text(status).font(.system(size: 13.5)).foregroundStyle(model.message == nil && model.waitUntil == nil ? Theme.faint : Theme.dim)
+                    .padding(.top, 18).frame(height: 20)
+                pad.padding(.top, 26)
+                HStack(spacing: 14) {
+                    if model.offersTouchID {
+                        Button { model.touchID() } label: {
+                            Label("Use Touch ID", systemImage: "touchid").font(.system(size: 14))
+                        }
+                        .buttonStyle(.mono)
+                    }
+                    TextAction(title: "Forgot PIN?") { model.forgot() }
+                }
+                .padding(.top, 26)
             }
-            .padding(.top, 26)
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -310,7 +361,7 @@ struct SetPINSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Eyebrow(lock.enabled ? "Change PIN" : "Set a PIN")
+            Eyebrow(lock.settings?.usesPIN == true ? "Change PIN" : "Set a PIN")
             Text(confirming ? "Type it again." : "4 to 8 digits.").font(.system(size: 14)).foregroundStyle(Theme.dim)
             MonoField(placeholder: confirming ? "Same PIN again" : "PIN", text: confirming ? $second : $first, secure: true, width: 220)
                 .focused($focused)
@@ -340,5 +391,61 @@ struct SetPINSheet: View {
         }
         guard second == first else { problem = "The PINs don\u{2019}t match. Start again."; first = ""; second = ""; confirming = false; return }
         if lock.setPIN(first) { dismiss() }
+    }
+}
+
+/// "Hide when in background": while another app is in front, every Folio window is covered in plain black, so
+/// nothing shows in the app switcher, Mission Control, screenshots of the desktop or beside other apps.
+/// It is AppKit, not SwiftUI, so the cover is drawn before macOS takes its snapshot of the window.
+@MainActor
+final class PrivacyScreen {
+    private let library: Library
+    private var covers: [(window: NSWindow, view: NSView)] = []
+    private var observers: [NSObjectProtocol] = []
+    /// The QA harness runs Folio in the background on purpose; there it only covers when asked (`privacy:on`).
+    private let automatic = ProcessInfo.processInfo.environment["FOLIO_DEBUG"] == nil
+
+    init(library: Library) {
+        self.library = library
+        let nc = NotificationCenter.default
+        for n in [NSApplication.willResignActiveNotification, NSApplication.didResignActiveNotification] {
+            observers.append(nc.addObserver(forName: n, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { if let self, self.automatic { self.cover() } }
+            })
+        }
+        observers.append(nc.addObserver(forName: NSApplication.didBecomeActiveNotification, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.uncover() }
+        })
+    }
+
+    var covered: Bool { !covers.isEmpty }
+
+    func cover() {
+        guard library.settings.privacyScreen else { return }
+        for w in NSApp.windows where w.isVisible && !(w is NSPanel) && !covers.contains(where: { $0.window === w }) {
+            guard let host = w.contentView?.superview ?? w.contentView else { continue }
+            let v = BlackView(frame: host.bounds)
+            v.autoresizingMask = [.width, .height]
+            host.addSubview(v, positioned: .above, relativeTo: nil)       // above the content and the title bar
+            covers.append((w, v))
+            w.displayIfNeeded()
+        }
+    }
+
+    func uncover() {
+        for c in covers { c.view.removeFromSuperview() }
+        covers = []
+    }
+
+    private final class BlackView: NSView {
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor.black.cgColor
+        }
+        required init?(coder: NSCoder) { nil }
+        override var isOpaque: Bool { true }
+        override func draw(_ dirtyRect: NSRect) { NSColor.black.setFill(); dirtyRect.fill() }
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { false }   // a click only brings Folio back
     }
 }

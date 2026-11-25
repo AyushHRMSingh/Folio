@@ -14,9 +14,12 @@ final class AppModel: ObservableObject {
     let search = GlobalSearchModel()
     /// PIN / Touch ID lock (Settings › Privacy).
     let lock: LockModel
+    /// Black cover while another app is in front (Settings › Privacy).
+    let privacy: PrivacyScreen
 
     init() {
         lock = LockModel(library: library)
+        privacy = PrivacyScreen(library: library)
         lock.app = self
         extensions.app = self
         library.onDownloadError = { [weak self] m in self?.error = m }
@@ -95,7 +98,7 @@ final class AppModel: ObservableObject {
     /// One dated backup per day, kept to the last few.
     private func autoBackupOnLaunch() {
         let s = library.settings
-        guard s.autoBackup, !library.entries.isEmpty,
+        guard s.setupDone, s.autoBackup, !library.entries.isEmpty,
               s.lastAutoBackup.map({ !Calendar.current.isDateInToday($0) }) ?? true else { return }
         Task { [weak self] in
             try? await Task.sleep(for: .seconds(8))       // after the launch work has settled

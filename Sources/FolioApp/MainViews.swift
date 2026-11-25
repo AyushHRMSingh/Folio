@@ -13,6 +13,9 @@ struct RootView: View {
             if let r = app.reader {
                 ReaderView(model: r).id(ObjectIdentifier(r)).transition(.opacity).zIndex(1)
             }
+            if !library.settings.setupDone {
+                SetupView(app: app, library: library).transition(.opacity).zIndex(5)
+            }
             LockOverlay(model: app.lock).zIndex(10)
         }
         .frame(minWidth: 760, minHeight: 520)      // SwiftUI resets the window's own minimum, so the content states it

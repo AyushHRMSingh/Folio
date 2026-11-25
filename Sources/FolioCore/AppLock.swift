@@ -16,7 +16,7 @@ public enum LockAfter: Int, Codable, CaseIterable, Sendable {
 }
 
 /// Folio's privacy lock: a PIN (stored only as a salted, slow hash in Folio's own settings file, never the
-/// Keychain) and optionally Touch ID. It keeps other people at this Mac out of your reading; it is not encryption.
+/// Keychain) and optionally Touch ID — or Touch ID alone (no PIN: empty hash, length 0). It keeps other people at this Mac out of your reading; it is not encryption.
 public struct AppLock: Codable, Equatable, Sendable {
     public var salt: String
     public var hash: String
@@ -27,6 +27,14 @@ public struct AppLock: Codable, Equatable, Sendable {
 
     public static let digits = 4...8
     static let rounds: UInt32 = 200_000
+
+    /// False for a Touch ID–only lock.
+    public var usesPIN: Bool { !hash.isEmpty }
+
+    /// Touch ID only, no PIN. The Mac's password is the fallback.
+    public static func touchIDOnly(after: LockAfter = .immediately) -> AppLock {
+        AppLock(salt: "", hash: "", length: 0, touchID: true, after: after)
+    }
 
     /// Nil when the PIN isn't 4–8 digits.
     public static func make(pin: String) -> AppLock? {
@@ -40,6 +48,7 @@ public struct AppLock: Codable, Equatable, Sendable {
     public static func isValid(_ pin: String) -> Bool { digits.contains(pin.count) && pin.allSatisfy(\.isASCII) && pin.allSatisfy(\.isNumber) }
 
     public func matches(_ pin: String) -> Bool {
+        guard usesPIN else { return false }
         let a = Array(Self.derive(pin, salt: salt).utf8), b = Array(hash.utf8)
         guard a.count == b.count else { return false }
         return zip(a, b).reduce(0) { $0 | ($1.0 ^ $1.1) } == 0       // same time whatever matches

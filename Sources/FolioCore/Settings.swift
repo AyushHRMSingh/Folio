@@ -222,7 +222,7 @@ public struct FolioSettings: Codable, Sendable {
     public var doubleFirstAlone = true            // the first page is a cover and stands alone
     public var splitWidePages = false             // single-page: a wide spread is shown as two halves
     public var cropBorders = false                // paged: zoom away plain white/black page margins
-    public var autoBackup = true                  // a dated backup each day Folio opens
+    public var autoBackup = false                 // a dated backup each day Folio opens; asked in first-launch setup
     public var backupsKept = 5
     public var lastAutoBackup: Date?
     public var tapZones: TapZones = .standard
@@ -258,6 +258,10 @@ public struct FolioSettings: Codable, Sendable {
     public var incognito = false
     /// PIN / Touch ID lock. Nil = off.
     public var appLock: AppLock?
+    /// Folio's windows go black while another app is in front (app switcher, Mission Control, beside other apps).
+    public var privacyScreen = true
+    /// First-launch setup (extensions, backup, reading style, page width) has been seen.
+    public var setupDone = false
     public var appearance: AppearanceMode = .system
     // Network
     /// FlareSolverr address (e.g. http://127.0.0.1:8191/v1). Empty = off. Lets the engine pass Cloudflare checks.
@@ -285,7 +289,7 @@ public struct FolioSettings: Codable, Sendable {
         doubleFirstAlone = c.lenient(Bool.self, .doubleFirstAlone) ?? true
         splitWidePages = c.lenient(Bool.self, .splitWidePages) ?? false
         cropBorders = c.lenient(Bool.self, .cropBorders) ?? false
-        autoBackup = c.lenient(Bool.self, .autoBackup) ?? true
+        autoBackup = c.lenient(Bool.self, .autoBackup) ?? false
         backupsKept = c.lenient(Int.self, .backupsKept) ?? 5
         lastAutoBackup = c.lenient(Date.self, .lastAutoBackup)
         tapZones = c.lenient(TapZones.self, .tapZones) ?? .standard
@@ -316,6 +320,8 @@ public struct FolioSettings: Codable, Sendable {
         parallelDownloads = c.lenient(Int.self, .parallelDownloads) ?? 2
         incognito = c.lenient(Bool.self, .incognito) ?? false
         appLock = c.lenient(AppLock.self, .appLock)
+        privacyScreen = c.lenient(Bool.self, .privacyScreen) ?? true
+        setupDone = c.lenient(Bool.self, .setupDone) ?? false
         appearance = c.lenient(AppearanceMode.self, .appearance) ?? .system
         flareSolverrURL = c.lenient(String.self, .flareSolverrURL) ?? ""
     }

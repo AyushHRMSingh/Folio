@@ -68,7 +68,7 @@ struct SettingsView: View {
             return s.updateInterval == .off ? "Only when you ask" : "Check: " + s.updateInterval.label
         case .downloads:
             return "\(s.parallelDownloads) at a time" + (s.deleteAfterRead ? " · delete after reading" : "")
-        case .privacy: return [s.appLock == nil ? nil : "Locked with a PIN", s.incognito ? "Incognito is on" : "Incognito is off"].compactMap { $0 }.joined(separator: ", ")
+        case .privacy: return [s.appLock.map { $0.usesPIN ? "Locked with a PIN" : "Locked with Touch ID" }, s.incognito ? "Incognito is on" : "Incognito is off"].compactMap { $0 }.joined(separator: ", ")
         case .sources:
             let n = s.servers.count
             return (n == 0 ? "No OPDS servers" : "\(n) OPDS server\(n == 1 ? "" : "s")")
@@ -237,30 +237,57 @@ struct SettingsUpdates: View {
     }
 }
 
+private enum LockKind: Hashable { case off, pin, touchID }
+
 struct SettingsPrivacy: View {
     @ObservedObject var app: AppModel
     @ObservedObject var library: Library
     @State private var confirmHistory = false
     @State private var confirmWeb = false
     @State private var settingPIN = false
+
+    private var lockKind: LockKind {
+        guard let l = library.settings.appLock else { return .off }
+        return l.usesPIN ? .pin : .touchID
+    }
+    private var lockOptions: [(LockKind, String)] {
+        [(.off, "Off"), (.pin, "PIN")] + (LockModel.touchIDAvailable || lockKind == .touchID ? [(.touchID, "Touch ID")] : [])
+    }
+    private var lockHint: String {
+        switch lockKind {
+        case .off: "With a PIN or Touch ID, Folio asks when it opens and when you come back."
+        case .pin: "\u{2318}L locks Folio now. If you forget the PIN, your Mac password removes it."
+        case .touchID: "\u{2318}L locks Folio now. Your Mac password also unlocks it."
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
-            SetRow(label: "Lock with a PIN", hint: library.settings.appLock == nil ? "Folio asks for it when it opens and when you come back."
-                   : "\u{2318}L locks Folio now. If you forget the PIN, your Mac password removes it.") {
-                MonoSwitch(isOn: Binding(get: { library.settings.appLock != nil },
-                                         set: { if $0 { settingPIN = true } else { app.lock.turnOff() } }))
+            SetRow(label: "Lock Folio", hint: lockHint) {
+                MonoChoice(options: lockOptions, selection: Binding(get: { lockKind }, set: { k in
+                    switch k {
+                    case .off: app.lock.turnOff()
+                    case .pin: if library.settings.appLock?.usesPIN != true { settingPIN = true }
+                    case .touchID: if library.settings.appLock?.usesPIN != false { app.lock.setTouchIDOnly() }
+                    }
+                }))
             }
             if let l = library.settings.appLock {
-                SetRow(label: "PIN") { TextAction(title: "Change…") { settingPIN = true } }
-                SetRow(label: "Unlock with Touch ID", hint: LockModel.touchIDAvailable ? nil : "This Mac has no Touch ID set up.") {
-                    MonoSwitch(isOn: Binding(get: { l.touchID && LockModel.touchIDAvailable },
-                                             set: { library.settings.appLock?.touchID = $0 }))
-                        .disabled(!LockModel.touchIDAvailable).opacity(LockModel.touchIDAvailable ? 1 : 0.4)
+                if l.usesPIN {
+                    SetRow(label: "PIN") { TextAction(title: "Change…") { settingPIN = true } }
+                    SetRow(label: "Unlock with Touch ID", hint: LockModel.touchIDAvailable ? nil : "This Mac has no Touch ID set up.") {
+                        MonoSwitch(isOn: Binding(get: { l.touchID && LockModel.touchIDAvailable },
+                                                 set: { library.settings.appLock?.touchID = $0 }))
+                            .disabled(!LockModel.touchIDAvailable).opacity(LockModel.touchIDAvailable ? 1 : 0.4)
+                    }
                 }
                 SetRow(label: "Lock after Folio is in the background") {
                     MonoChoice(options: LockAfter.allCases.map { ($0, $0.label) },
                                selection: Binding(get: { l.after }, set: { library.settings.appLock?.after = $0 }))
                 }
+            }
+            SetRow(label: "Hide when in background", hint: "Folio goes black while another app is in front, so nothing shows in the app switcher, Mission Control or beside other windows.") {
+                MonoSwitch(isOn: $library.settings.privacyScreen)
             }
             SetRow(label: "Incognito", hint: "While on, Folio doesn't save reading progress or history.") { MonoSwitch(isOn: $library.settings.incognito) }
             SetRow(label: "Reading history", hint: "Empties the Recent list. Reading progress on chapters is kept.") {

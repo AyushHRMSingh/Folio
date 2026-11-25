@@ -26,7 +26,7 @@ case "$cmd" in
     HOME="$HOME_DIR" CFFIXED_USER_HOME="$HOME_DIR" TMPDIR="$HOME_DIR/tmp/" FOLIO_DEBUG=$TOKEN FOLIO_DEBUG_LOG="$QA/log" \
       "$ROOT/.build/release/FolioApp" >/dev/null 2>"$QA/err" &
     echo $! > "$QA/pid"; sleep 3
-    "$QA/bin/send" $TOKEN "size:1440x900"; echo "running (pid $(cat "$QA/pid")); data in $HOME_DIR" ;;
+    "$QA/bin/send" $TOKEN "size:1440x900"; "$QA/bin/send" $TOKEN "setup:done"; echo "running (pid $(cat "$QA/pid")); data in $HOME_DIR" ;;
   send) "$QA/bin/send" $TOKEN "$2"; sleep "${3:-1}" ;;
   snap) "$QA/bin/send" $TOKEN "snap:$2"; sleep 1; echo "$2" ;;
   log)  cat "$QA/log" ;;
