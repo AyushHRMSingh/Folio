@@ -4,7 +4,7 @@ import ImageIO
 import SwiftUI
 
 enum SidebarItem: Hashable {
-    case search, library, recents, sources, extensions, source(String), settings
+    case search, library, recents, sources, extensions, source(String), settings, downloads
 }
 
 @MainActor
@@ -78,10 +78,28 @@ final class AppModel: ObservableObject {
     @Published var debugFilterPanel = false      // dev only: lets the QA harness open the filter panel
     /// The library series being moved to another source (shows the migrate sheet).
     @Published var migrating: LibraryEntry?
-    /// The one entry point to Folio's in-app web view (separate window, persistent Folio-only website data).
+    /// Folio's web view, shown as a page inside the main window, on top of whatever you were doing (the reader
+    /// stays open underneath, so Back returns to the same spot). Nil when closed.
+    @Published var web: WebState?
+    /// The reader or the web view has the whole window (no sidebar, no toolbar).
+    var fullPage: Bool { reader != nil || web != nil }
+
+    /// The one entry point to Folio's in-app web view (persistent Folio-only website data).
     func openWeb(_ urlString: String?, title: String) {
         guard let u = urlString.flatMap(URL.init(string:)), u.scheme?.hasPrefix("http") == true else { status = "This source didn’t give a web address."; return }
-        WebWindow.shared.open(u)      // `title` is kept for callers; the window is always "Folio Web"
+        reader?.autoScroll = false
+        if let web { web.load(u); return }
+        let s = WebState()
+        s.load(u)
+        setReaderChrome(true)
+        withAnimation(.easeInOut(duration: 0.18)) { web = s }
+    }
+
+    func closeWeb() {
+        guard let s = web else { return }
+        s.shutdown()
+        withAnimation(.easeInOut(duration: 0.18)) { web = nil }
+        if reader == nil { setReaderChrome(false) }
     }
     @Published var error: String?
     @Published var status: String?
@@ -214,7 +232,7 @@ final class AppModel: ObservableObject {
     func closeReader() {
         withAnimation(.easeInOut(duration: 0.22)) { reader = nil }
         library.pruneReadDownloads()
-        setReaderChrome(false)
+        if web == nil { setReaderChrome(false) }
     }
 
     @Published var path = NavigationPath()
@@ -320,7 +338,7 @@ final class Images {
             l = e
             if priority > e.priority {                 // e.g. a read-ahead page just scrolled into view
                 e.priority = priority
-                Task { await FetchScheduler.shared.promote(key: key, to: priority) }
+                ImageFetch.promote(alias: key, to: priority)      // the page URL is the image's alias in ImageFetch
             }
         } else {
             let e = Load(priority)

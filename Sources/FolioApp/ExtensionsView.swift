@@ -117,7 +117,7 @@ struct ExtensionsView: View {
         }
         .background(Theme.bg)
         .navigationTitle("Extensions")
-        .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+        .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
         .sheet(isPresented: $showRepos) { ReposSheet(model: model) }
         // Nothing starts (and nothing is downloaded) until the notice has been accepted.
         .task { model.app = app; if accepted, !model.loaded { await model.load(refresh: false) } }

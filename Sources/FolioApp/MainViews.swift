@@ -13,6 +13,9 @@ struct RootView: View {
             if let r = app.reader {
                 ReaderView(model: r).id(ObjectIdentifier(r)).transition(.opacity).zIndex(1)
             }
+            if let w = app.web {
+                WebBrowserView(state: w) { app.closeWeb() }.id(ObjectIdentifier(w)).transition(.opacity).zIndex(2)
+            }
             if !library.settings.setupDone {
                 SetupView(app: app, library: library).transition(.opacity).zIndex(5)
             }
@@ -49,13 +52,14 @@ struct RootView: View {
                 case .recents: RecentsView(app: app, library: library)
                 case .sources, .extensions, .source: SourcesView(app: app, library: library)
                 case .settings: SettingsView(app: app, library: library)
+                case .downloads: DownloadsView(app: app, library: library)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)     // pages start at the top, however tall the window
-            .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+            .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
             .navigationDestination(for: Series.self) {
                 SeriesView(app: app, library: library, series: $0)
-                    .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+                    .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
             }
             .navigationDestination(for: SourceRoute.self) { route in
                 Group {
@@ -67,15 +71,15 @@ struct RootView: View {
                     }
                 }
                 .navigationBarBackButtonHidden(true)     // the page has its own BackLink; the title bar stays empty
-                .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+                .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
             }
             .navigationDestination(for: SettingsPage.self) { SettingsPageView(app: app, library: library, page: $0) }
         }
         .toolbarBackground(Theme.bg, for: .windowToolbar)         // a solid, fixed bar: content scrolls beneath it, never through it
-        .toolbarBackground(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+        .toolbarBackground(app.fullPage ? .hidden : .visible, for: .windowToolbar)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.bg)
-        .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+        .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
         .overlay(alignment: .bottom) { Banner(app: app) }
         .onChange(of: app.sidebar) { _, new in
             // `.extensions` / `.source(id)` stay usable as shorthand: show Sources and push the page.
@@ -98,7 +102,6 @@ enum SourceRoute: Hashable { case browse(String), extensions }
 struct Sidebar: View {
     @ObservedObject var app: AppModel
     @ObservedObject var library: Library
-    @State private var queueOpen = false
 
     var current: SidebarItem { app.sidebar ?? .library }
     /// Sources stays lit while you're inside one of its pages.
@@ -114,19 +117,23 @@ struct Sidebar: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 6).padding(.bottom, 22)
-            row("Library", "books.vertical", .library, on: current == .library || current == .search)
-            row("Recent", "clock", .recents, on: current == .recents)
-            row("Sources", "square.stack.3d.up", .sources, on: inSources)
-            row("Settings", "gearshape", .settings, on: current == .settings)
+            row("Library", "books.vertical", .library, on: current == .library || current == .search).help("Library  \u{2318}1")
+            row("Recent", "clock", .recents, on: current == .recents).help("Recent  \u{2318}2")
+            row("Sources", "square.stack.3d.up", .sources, on: inSources).help("Sources  \u{2318}3")
+            row("Settings", "gearshape", .settings, on: current == .settings).help("Settings  \u{2318}4")
             Spacer()
-            if library.downloadsPending > 0 {
-                Button { queueOpen.toggle() } label: {
-                    Label("Downloading · \(library.downloadsPending)", systemImage: "arrow.down.circle")
-                        .font(.system(size: 13.5)).foregroundStyle(Theme.dim)
+            if !library.downloadJobs.isEmpty || current == .downloads {
+                Button { app.sidebar = .downloads; app.path = NavigationPath() } label: {
+                    Label(queueLabel, systemImage: library.downloadsPaused ? "pause.circle" : "arrow.down.circle")
+                        .font(.system(size: 13.5, weight: current == .downloads ? .semibold : .regular))
+                        .foregroundStyle(current == .downloads ? Theme.ink : Theme.dim)
                         .padding(.horizontal, 10).padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(current == .downloads ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 6))
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .popover(isPresented: $queueOpen, arrowEdge: .trailing) { DownloadQueue(library: library) }
+                .help("Downloads  \u{2318}5")
             }
             if library.settings.incognito {
                 Button { library.settings.incognito = false } label: {
@@ -141,6 +148,12 @@ struct Sidebar: View {
         .padding(.horizontal, 10).padding(.top, 44).padding(.bottom, 14)
         .frame(width: 188).frame(maxHeight: .infinity, alignment: .top)
         .background(Theme.bg)
+    }
+
+    private var queueLabel: String {
+        let failed = library.downloadJobs.count - library.downloadsPending
+        if library.downloadsPending == 0 { return failed > 0 ? "Downloads · \(failed) failed" : "Downloads" }
+        return (library.downloadsPaused ? "Paused · " : "Downloading · ") + "\(library.downloadsPending)"
     }
 
     func row(_ title: String, _ icon: String, _ item: SidebarItem, on: Bool) -> some View {
@@ -159,19 +172,6 @@ struct Sidebar: View {
     }
 }
 
-/// Clicking the queue indicator shows it; cancelling is a separate, explicit button.
-struct DownloadQueue: View {
-    @ObservedObject var library: Library
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Downloads").font(.system(size: 14.5, weight: .semibold))
-            Text("\(library.downloadsPending) chapter\(library.downloadsPending == 1 ? "" : "s") queued or downloading")
-                .font(.system(size: 13.5)).foregroundStyle(Theme.dim)
-            Button("Cancel all", role: .destructive) { library.cancelDownloads() }
-        }
-        .padding(16).frame(minWidth: 220, alignment: .leading)
-    }
-}
 
 
 // MARK: - Sources: everything you can read from, in one list
@@ -606,7 +606,7 @@ struct BrowseView: View {
         .overlay { if loading && results.isEmpty { ProgressView().controlSize(.large) } }
         .navigationTitle(source.name)
         .navigationSubtitle(activeQuery.isEmpty ? (applied.activeCount > 0 ? "Filtered" : (latest ? "Newest" : "Popular")) : "Results for “\(activeQuery)”")
-        .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+        .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
         .onChange(of: query) { _, q in if q.isEmpty && !activeQuery.isEmpty { activeQuery = ""; Task { await reset() } } }
         .task { if results.isEmpty { await reset() } }
         .task {

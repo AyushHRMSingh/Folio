@@ -121,7 +121,7 @@ struct SettingsPageView: View {
         }
         .background(Theme.bg)
         .navigationBarBackButtonHidden(true)
-        .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+        .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
     }
 
     @ViewBuilder var content: some View {

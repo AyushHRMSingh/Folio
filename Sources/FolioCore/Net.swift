@@ -14,7 +14,7 @@ public extension URLSession {
         c.timeoutIntervalForRequest = 30
         c.timeoutIntervalForResource = 180
         c.httpMaximumConnectionsPerHost = 8
-        c.waitsForConnectivity = true
+        c.waitsForConnectivity = false             // offline should say so at once, not hang for minutes
         return URLSession(configuration: c)
     }()
 
@@ -78,9 +78,11 @@ public actor FetchScheduler {
 
     public init(limit: Int) { self.limit = max(1, limit) }
 
-    public func run<T: Sendable>(key: String? = nil, priority: FetchPriority,
+    /// `current`, when given, is read at the moment the request queues (no suspension between reading it and
+    /// queueing), so a promotion that arrived before the request reached the scheduler is not lost.
+    public func run<T: Sendable>(key: String? = nil, priority: FetchPriority, current: (@Sendable () -> FetchPriority)? = nil,
                                  _ op: @Sendable () async throws -> T) async throws -> T {
-        try await acquire(key: key, priority: priority)
+        try await acquire(key: key, priority: max(priority, current?() ?? priority))
         defer { release() }
         return try await op()
     }
@@ -129,6 +131,76 @@ public actor FetchScheduler {
 }
 
 // MARK: - Errors
+
+/// Everyone asking for the same key at the same time shares one load. It is cancelled only when every
+/// caller has gone away (a page scrolled off, read-ahead no longer needed).
+final class SharedFetch: @unchecked Sendable {
+    static let shared = SharedFetch()
+    private final class Entry {
+        let task: Task<Data, Error>
+        /// Callers still waiting (not cancelled). At zero the load is cancelled.
+        var active = 0
+        var priority: FetchPriority
+        let alias: String?
+        init(_ t: Task<Data, Error>, _ p: FetchPriority, _ a: String?) { task = t; priority = p; alias = a }
+    }
+    private final class PriorityBox: @unchecked Sendable { weak var entry: Entry? }
+    private let lock = NSLock()
+    private var entries: [String: Entry] = [:]
+    private var aliases: [String: String] = [:]
+
+    /// `alias` is another name callers know the image by (the page's own URL), for `promote`.
+    /// `op` gets the entry's live priority (raised when a more urgent caller joins), for the scheduler.
+    func run(_ key: String, alias: String? = nil,
+             _ op: @escaping @Sendable (_ priority: @escaping @Sendable () -> FetchPriority) async throws -> Data) async throws -> Data {
+        let p = FetchPriority.current
+        let (e, raise): (Entry, Bool) = lock.withLock {
+            if let e = entries[key], e.active > 0 {
+                e.active += 1
+                let raise = p > e.priority
+                if raise { e.priority = p }
+                return (e, raise)
+            }
+            let box = PriorityBox()
+            let e = Entry(Task { try await op { box.entry?.priority ?? p } }, p, alias)
+            box.entry = e
+            e.active = 1
+            entries[key] = e
+            if let alias { aliases[alias] = key }
+            return (e, false)
+        }
+        // A page already waiting as read-ahead that you now look at goes to the front of the line.
+        if raise { Task { await FetchScheduler.shared.promote(key: key, to: p) } }
+        let result = await withTaskCancellationHandler {
+            await e.task.result
+        } onCancel: {
+            let last: Bool = lock.withLock { e.active -= 1; return e.active == 0 }
+            if last { e.task.cancel() }
+        }
+        lock.withLock {
+            if entries[key] === e {
+                entries[key] = nil
+                if let a = e.alias, aliases[a] == key { aliases[a] = nil }
+            }
+        }
+        return try result.get()
+    }
+
+    func promote(alias: String, to p: FetchPriority) {
+        let key: String? = lock.withLock {
+            guard let k = aliases[alias], let e = entries[k], p > e.priority else { return nil }
+            e.priority = p
+            return k
+        }
+        if let key { Task { await FetchScheduler.shared.promote(key: key, to: p) } }
+    }
+}
+
+/// The image stopped part-way, every time Folio asked.
+public struct IncompleteImageError: LocalizedError, Sendable {
+    public init() {}
+    public var errorDescription: String? { "The page arrived incomplete. Click to retry." }
+}
 
 /// The source is behind a Cloudflare (or similar) browser check and Folio couldn't pass it.
 public struct CloudflareError: LocalizedError, Sendable {
@@ -266,7 +338,8 @@ public enum Net {
 public final class DiskCache: @unchecked Sendable {
     public static let shared = DiskCache(dir: Paths.cache.appendingPathComponent("net", isDirectory: true), limit: 1 << 30)
 
-    private struct Entry { var size: Int; var used: Date }
+    /// `used` = last read (for LRU); `written` = when it was fetched (for max age).
+    private struct Entry { var size: Int; var used: Date; var written: Date }
     private let dir: URL
     private let limit: Int
     private let lock = NSLock()
@@ -287,11 +360,12 @@ public final class DiskCache: @unchecked Sendable {
     private func loadIndexLocked() {
         guard !loaded else { return }
         loaded = true
-        let keys: [URLResourceKey] = [.fileSizeKey, .contentAccessDateKey, .contentModificationDateKey]
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentAccessDateKey, .contentModificationDateKey, .creationDateKey]
         for u in (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: keys)) ?? [] {
             guard let v = try? u.resourceValues(forKeys: Set(keys)) else { continue }
             let n = v.fileSize ?? 0
-            index[u.lastPathComponent] = Entry(size: n, used: v.contentModificationDate ?? .distantPast)
+            index[u.lastPathComponent] = Entry(size: n, used: v.contentModificationDate ?? .distantPast,
+                                               written: v.creationDate ?? v.contentModificationDate ?? .distantPast)
             total += n
         }
     }
@@ -302,7 +376,8 @@ public final class DiskCache: @unchecked Sendable {
         lock.lock()
         loadIndexLocked()
         guard var e = index[f] else { lock.unlock(); return nil }
-        if let maxAge, Date().timeIntervalSince(e.used) > maxAge { lock.unlock(); return nil }   // stale: refetch and overwrite
+        // Stale by when it was fetched, not when it was last looked at (a cover you see daily still refreshes weekly).
+        if let maxAge, Date().timeIntervalSince(e.written) > maxAge { lock.unlock(); return nil }
         lock.unlock()
         guard let d = try? Data(contentsOf: url, options: .mappedIfSafe) else {
             lock.lock(); if let old = index.removeValue(forKey: f) { total -= old.size }; lock.unlock()
@@ -317,6 +392,12 @@ public final class DiskCache: @unchecked Sendable {
         return d
     }
 
+    public func remove(_ key: String) {
+        let f = name(key)
+        try? FileManager.default.removeItem(at: dir.appendingPathComponent(f))
+        lock.lock(); if let old = index.removeValue(forKey: f) { total -= old.size }; lock.unlock()
+    }
+
     public func set(_ key: String, _ data: Data) {
         guard data.count < 64 << 20 else { return }
         let f = name(key)
@@ -324,7 +405,7 @@ public final class DiskCache: @unchecked Sendable {
         lock.lock()
         loadIndexLocked()
         if let old = index[f] { total -= old.size }
-        index[f] = Entry(size: data.count, used: Date())
+        index[f] = Entry(size: data.count, used: Date(), written: Date())
         total += data.count
         let over = total > limit
         lock.unlock()
@@ -362,16 +443,38 @@ public enum ImageFetch {
     /// Disk cache → scheduler (bounded, prioritised) → network, then store. Anything that isn't
     /// an image (an HTML error or challenge page) is never cached and is reported properly.
     /// `group` names the source (or site) for `SourceBreaker`: a source that keeps failing is left alone for a while.
-    public static func data(key: String, group: String? = nil, maxAge: TimeInterval? = nil,
-                            _ load: @Sendable () async throws -> Data) async throws -> Data {
-        if let d = DiskCache.shared.get(key, maxAge: maxAge) { return d }
+    public static func data(key: String, group: String? = nil, maxAge: TimeInterval? = nil, alias: String? = nil,
+                            _ load: @escaping @Sendable () async throws -> Data) async throws -> Data {
+        if let d = DiskCache.shared.get(key, maxAge: maxAge) {
+            if !looksLikeImage(d) || isComplete(d) { return d }
+            DiskCache.shared.remove(key)                  // a cut-off image cached by an older Folio: fetch it again
+        }
         if let group { try SourceBreaker.shared.check(group) }
+        // One request per image at a time. Two at once (the reader and the page-shape pass, or a download) make the
+        // extension engine write the same temp file twice; one of them then breaks off mid-image.
+        return try await SharedFetch.shared.run(key, alias: alias) { prio in try await fetch(key: key, group: group, priority: prio, load) }
+    }
+
+    /// Move a queued image (known by its page URL) ahead, e.g. a read-ahead page that just scrolled into view.
+    public static func promote(alias: String, to p: FetchPriority) { SharedFetch.shared.promote(alias: alias, to: p) }
+
+    private static func fetch(key: String, group: String?, priority: @escaping @Sendable () -> FetchPriority,
+                              _ load: @Sendable () async throws -> Data) async throws -> Data {
         do {
-            let d = try await FetchScheduler.shared.run(key: key, priority: FetchPriority.current) {
-                // Checked again after waiting in line: the source may have been paused meanwhile.
-                if let group { try SourceBreaker.shared.check(group) }
-                return try await load()
+            // A connection that drops mid-image (often between the engine and the site) can still end "successfully":
+            // the bytes stop early and the page draws smeared. Ask again, and never keep or show a cut-off image.
+            // The wait between tries happens outside the scheduler, so it never holds a slot.
+            var got: Data?
+            for n in 0..<3 {
+                if n > 0 { try await Task.sleep(for: .seconds(0.5 * Double(n))) }
+                let d = try await FetchScheduler.shared.run(key: key, priority: FetchPriority.current, current: priority) {
+                    // Checked again after waiting in line: the source may have been paused meanwhile.
+                    if let group { try SourceBreaker.shared.check(group) }
+                    return try await load()
+                }
+                if !looksLikeImage(d) || isComplete(d) { got = d; break }
             }
+            guard let d = got else { throw IncompleteImageError() }
             if looksLikeImage(d) {
                 DiskCache.shared.set(key, d)
             } else if CloudflareError.matches(String(decoding: d.prefix(4096), as: UTF8.self)) {
@@ -385,7 +488,28 @@ public enum ImageFetch {
         }
     }
 
-    static func looksLikeImage(_ d: Data) -> Bool {
+    /// False when the image's own format says it ends later than the data does (a download cut short).
+    /// Formats without a reliable end marker count as complete.
+    public static func isComplete(_ d: Data) -> Bool {
+        guard d.count > 12 else { return false }
+        let b = [UInt8](d.prefix(12))
+        let tail = [UInt8](d.suffix(64 << 10))      // some servers pad or append data after the end marker
+        func tailHas(_ m: [UInt8]) -> Bool {
+            guard tail.count >= m.count else { return false }
+            return (0...(tail.count - m.count)).contains { tail[$0..<($0 + m.count)].elementsEqual(m) }
+        }
+        // (ImageIO can't tell: it reports a cut-off file as complete and decodes the missing part as grey.)
+        if b[0] == 0xFF, b[1] == 0xD8 { return tailHas([0xFF, 0xD9]) }                         // JPEG end-of-image
+        if b[0] == 0x89, b[1] == 0x50, b[2] == 0x4E, b[3] == 0x47 { return tailHas(Array("IEND".utf8)) }
+        if b[0] == 0x47, b[1] == 0x49, b[2] == 0x46 { return tail.suffix(8).contains(0x3B) }   // GIF trailer
+        if b[0] == 0x52, b[1] == 0x49, b[2] == 0x46, b[3] == 0x46, b[8] == 0x57, b[9] == 0x45, b[10] == 0x42, b[11] == 0x50 {
+            let riff = Int(b[4]) | Int(b[5]) << 8 | Int(b[6]) << 16 | Int(b[7]) << 24       // WEBP: RIFF size says how long it is
+            return d.count >= riff + 8
+        }
+        return true
+    }
+
+    public static func looksLikeImage(_ d: Data) -> Bool {
         guard d.count > 12 else { return false }
         let b = [UInt8](d.prefix(12))
         if b[0] == 0xFF, b[1] == 0xD8 { return true }                                         // JPEG

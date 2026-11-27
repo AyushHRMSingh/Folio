@@ -110,7 +110,7 @@ public final class ExtensionSource: Source, @unchecked Sendable {
         case .remote(let u):
             let s = u.absoluteString
             let path = s.hasPrefix("engine:") ? String(s.dropFirst(7)) : s
-            return try await ImageFetch.data(key: "e|" + path, group: id) { [engine] in try await engine.fetch(path) }
+            return try await ImageFetch.data(key: "e|" + path, group: id, alias: s) { [engine] in try await engine.fetch(path) }
         }
     }
 

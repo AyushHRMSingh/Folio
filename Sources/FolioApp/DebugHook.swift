@@ -46,6 +46,7 @@ enum DebugHook {
             case "sources": app.sidebar = .sources
             case "extensions": app.sidebar = .extensions
             case "settings": app.sidebar = .settings
+            case "downloads": app.sidebar = .downloads
             default: app.sidebar = .source(arg)
             }
         case "read":   // read:<title substring>  (library entry)
@@ -97,6 +98,14 @@ enum DebugHook {
         case "privacy": if arg == "on" { app.privacy.cover() } else { app.privacy.uncover() }   // privacy:on|off → as if Folio went to the background / came back
         case "setup": app.library.settings.setupDone = arg != "show"       // setup:show|done → first-launch setup on/off
         case "setup-step": NotificationCenter.default.post(name: .folioSetupStep, object: Int(arg))   // setup-step:<0-3>
+        case "fake-downloads":   // a made-up, paused queue for the Downloads page
+            app.library.debugShowQueue([
+                DownloadJob(seriesID: "a", chapterURL: "1", seriesTitle: "Midnight Courier", chapterName: "Chapter 12", state: .running, done: 14, total: 38),
+                DownloadJob(seriesID: "a", chapterURL: "2", seriesTitle: "Midnight Courier", chapterName: "Chapter 13"),
+                DownloadJob(seriesID: "b", chapterURL: "3", seriesTitle: "Iron Harbor", chapterName: "Chapter 4: The Tide"),
+                DownloadJob(seriesID: "b", chapterURL: "4", seriesTitle: "Iron Harbor", chapterName: "Chapter 5", state: .failed("The site timed out")),
+            ])
+            app.sidebar = .downloads
         case "lock": app.lock.lock()                    // lock → the lock screen (needs set:pin=<digits>)
         case "type-pin": app.lock.debugType(arg)        // type-pin:<digits> → as if typed on the lock screen
         case "web": app.openWeb(arg, title: "QA")       // web:<url> → the in-app web window
@@ -139,7 +148,9 @@ enum DebugHook {
             log("window frame=\(window.frame) min=\(window.minSize) contentMax=\(window.contentMaxSize) contentMin=\(window.contentMinSize)")
             if let r = app.reader {
                 log("reader chapter=\(r.chapter.name) index=\(r.index)/\(r.pages.count) zoom=\(r.zoom) items=\(r.items.count) loading=\(r.loading) error=\(r.error ?? "-")")
-            } else {
+            }
+            if let w = app.web { log("web url=\(w.url?.absoluteString ?? "-") title=\(w.pageTitle) loading=\(w.loading) failure=\(w.failure ?? "-")") }
+            if app.reader == nil {
                 log("no reader; sidebar=\(String(describing: app.sidebar)); library=\(app.library.entries.count)")
             }
         case "fullscreen":     // fullscreen:on|off (only toggles when state differs)

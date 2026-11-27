@@ -253,12 +253,12 @@ public final class OPDSSource: Source, @unchecked Sendable {
     public func imageData(_ page: PageRef) async throws -> Data {
         switch page {
         case .file(let u): return try Data(contentsOf: u)
-        case .remote(let u): return try await ImageFetch.data(key: "o|\(server.id)|" + u.absoluteString, group: id) { try await get(u) }
+        case .remote(let u): return try await ImageFetch.data(key: "o|\(server.id)|" + u.absoluteString, group: id, alias: u.absoluteString) { try await self.get(u) }
         }
     }
 
     public func coverData(_ s: Series) async throws -> Data? {
         guard let c = s.coverURL, let u = URL(string: c) else { return nil }
-        return try? await ImageFetch.data(key: "o|\(server.id)|" + c, group: id, maxAge: 7 * 86400) { try await get(u) }
+        return try? await ImageFetch.data(key: "o|\(server.id)|" + c, group: id, maxAge: 7 * 86400) { try await self.get(u) }
     }
 }

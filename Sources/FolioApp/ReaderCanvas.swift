@@ -73,6 +73,47 @@ final class PageTile: CALayer {
     let spinner = CAShapeLayer()
     var key = ""
     var failed = false
+    /// Long webtoon pages are taller than the GPU can draw as one texture (they'd show as an empty, dark page),
+    /// so above `sliceHeight` pixels the image is shown as a stack of bands instead. (Width is already capped
+    /// at 2000 px when pages are decoded, so only height needs slicing.)
+    private var slices: [CALayer] = []
+    private var sliceFractions: [CGRect] = []
+    private(set) var hasImage = false
+    static let sliceHeight = 4096
+
+    /// Whether y grows downward inside this layer (the reader's document view is flipped, and that carries down).
+    private var flippedInside: Bool {
+        var f = isGeometryFlipped, l = superlayer
+        while let p = l { if p.isGeometryFlipped { f.toggle() }; l = p.superlayer }
+        return f
+    }
+
+    func setImage(_ cg: CGImage?) {
+        for s in slices { s.removeFromSuperlayer() }
+        slices = []; sliceFractions = []
+        hasImage = cg != nil
+        guard let cg, cg.height > Self.sliceHeight else { contents = cg; return }
+        contents = nil
+        let h = cg.height
+        var y = 0
+        while y < h {
+            let band = min(Self.sliceHeight, h - y)
+            if let part = cg.cropping(to: CGRect(x: 0, y: y, width: cg.width, height: band)) {
+                let l = CALayer()
+                l.contents = part
+                l.contentsGravity = .resize
+                l.minificationFilter = .trilinear
+                l.contentsScale = contentsScale
+                l.isOpaque = true
+                l.actions = ["position": NSNull(), "bounds": NSNull(), "contents": NSNull()]
+                insertSublayer(l, at: UInt32(slices.count))      // under the label and spinner
+                slices.append(l)
+                sliceFractions.append(CGRect(x: 0, y: CGFloat(y) / CGFloat(h), width: 1, height: CGFloat(band) / CGFloat(h)))
+            }
+            y += band
+        }
+        setNeedsLayout()
+    }
 
     override init() {
         super.init()
@@ -99,6 +140,11 @@ final class PageTile: CALayer {
 
     override func layoutSublayers() {
         super.layoutSublayers()
+        for (l, f) in zip(slices, sliceFractions) {       // image rows run top-down; layer space is bottom-up unless flipped
+            let y = flippedInside ? f.minY : 1 - f.maxY
+            l.frame = CGRect(x: 0, y: (y * bounds.height).rounded(), width: bounds.width,
+                             height: (f.height * bounds.height).rounded(.up) + 1)
+        }
         if label.isWrapped, let s = label.string as? String {
             // A message: wrapped to a readable width, centred in the page.
             let w = max(60, min(bounds.width - 48, 460))
@@ -429,7 +475,7 @@ final class StripController: NSObject {
             let allowed = model.mayLoad(c, index: n, count: total)
             if let t = tiles[s.item.id] {
                 // A neighbour chapter you've now scrolled into: start the pages that were held back.
-                if allowed, t.contents == nil, !t.failed, !loading.contains(t.key) { load(p, id: s.item.id, number: n + 1) }
+                if allowed, !t.hasImage, !t.failed, !loading.contains(t.key) { load(p, id: s.item.id, number: n + 1) }
                 return
             }
             let t = PageTile()
@@ -481,7 +527,7 @@ final class StripController: NSObject {
             t.add(f, forKey: "fadeIn")
         }
         noAnim {
-            t.contents = img.cgImage(forProposedRect: nil, context: nil, hints: nil)
+            t.setImage(img.cgImage(forProposedRect: nil, context: nil, hints: nil))
             t.isOpaque = true                 // pages have no transparency: skip blending in the compositor
             t.backgroundColor = nil
             t.failed = false
@@ -543,7 +589,7 @@ final class StripController: NSObject {
         guard let i = slotByPage[key], i < slots.count, let a = Images.shared.aspect(key),
               case .page(let c, _, _, _) = slots[i].item.kind else { return }
         if chapterAspect[c.url] == nil { chapterAspect[c.url] = max(0.05, a) }
-        if tiles[slots[i].item.id]?.contents != nil { return }       // already showing the real image
+        if tiles[slots[i].item.id]?.hasImage == true { return }       // already showing the real image
         resizeSlot(i, to: (columnWidth / max(0.05, a)).rounded())
     }
 
@@ -608,8 +654,8 @@ final class StripController: NSObject {
 
     private func pageMenu(at p: NSPoint) -> NSMenu? {
         guard let i = slotAt(y: p.y), slots[i].y <= p.y, p.y <= slots[i].y + slots[i].h,
-              case .page(_, let ref, let n, _) = slots[i].item.kind, tiles[slots[i].item.id]?.contents != nil else { return nil }
-        return PageMenu.make(page: ref, number: n + 1, model: model, source: source, view: doc, at: p, cropToggle: false)
+              case .page(let c, let ref, let n, _) = slots[i].item.kind, tiles[slots[i].item.id]?.hasImage == true else { return nil }
+        return PageMenu.make(page: ref, number: n + 1, model: model, source: source, view: doc, at: p, cropToggle: false, chapter: c)
     }
 
     // MARK: auto-scroll

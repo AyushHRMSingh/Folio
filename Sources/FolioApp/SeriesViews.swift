@@ -92,7 +92,7 @@ struct SeriesView: View {
             if let e = entry, series.sourceID != "local", e.series.webURL == nil { _ = try? await library.refresh(e.id) }
         }
         .navigationBarBackButtonHidden(true)
-        .toolbar(app.reader == nil ? .visible : .hidden, for: .windowToolbar)
+        .toolbar(app.fullPage ? .hidden : .visible, for: .windowToolbar)
     }
 
     var header: some View {
@@ -321,6 +321,11 @@ struct ChapterRow: View {
     @State private var hover = false
 
     var downloading: Bool { library.downloading.contains(series.id + "|" + state.chapter.url) }
+    /// Waiting in the download queue (not started yet).
+    var queued: Bool {
+        let k = series.id + "|" + state.chapter.url
+        return library.downloadJobs.contains { $0.key == k && $0.state == .queued }
+    }
     var number: String {
         let n = state.chapter.number
         guard n >= 0 else { return "—" }
@@ -367,9 +372,10 @@ struct ChapterRow: View {
             if inLibrary && series.sourceID != "local" {
               Group {
                     if downloading { ProgressView().controlSize(.mini) }
+                    else if queued { Image(systemName: "clock").font(.system(size: 11)).foregroundStyle(Theme.faint).help("Queued for download") }
                     else if state.downloaded { Text("↓").font(.system(size: 13.5, weight: .bold, design: .monospaced)).foregroundStyle(Theme.dim).help("Downloaded") }
                     else {
-                        Button { Task { do { try await library.download(series.id, chapter: state.chapter.url) } catch { app.report(error) } } }
+                        Button { library.enqueueDownloads(series.id, chapters: [state.chapter.url]) }
                             label: { Text("↓").font(.system(size: 13.5, design: .monospaced)).foregroundStyle(hover ? Theme.ink : Theme.faint) }
                             .buttonStyle(.plain).help("Download for offline reading")
                     }

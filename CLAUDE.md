@@ -26,6 +26,13 @@ Ideas: `FEATURES.md`. Parked iPad/iPhone plan: `PORTING.md`. Proposed Suwayomi r
 - **Persistence**: one JSON file, `~/Library/Application Support/Folio/library.json`. Models decode tolerantly — new fields
   must be optional or have a `decodeIfPresent` default so old files keep loading (there's a test for this).
 - **Images**: decoded off the main thread and downsampled (`Images` in `AppModel.swift`); aspect ratios are remembered.
+- **One request per image at a time** (`SharedFetch` in `Net.swift`): two concurrent requests for the same page make the
+  engine write the same `manga-cache/…/NNN.tmp` twice and one response breaks off mid-image (smeared, then black pages).
+  `ImageFetch` also rejects cut-off images (JPEG/PNG/GIF/WebP end markers), retries, and never caches them.
+  Very tall pages are drawn as 4096 px slices (`PageTile.setImage`).
+  Page lists are shared the same way (`Library.pageListLoads`). Promotion of a queued page goes through
+  `ImageFetch.promote(alias:)` (the page URL), since scheduler keys are source-prefixed (`e|…`, `o|…`).
+  Downloads refuse non-image or cut-off pages. Cover max age counts from when it was fetched, not last viewed.
 - Min macOS 15; `Package.swift` uses tools 6.0 with Swift 5 language mode.
 - The Folio window toolbar is hidden while reading; `AppModel.setReaderChrome` enforces it (SwiftUI keeps re-showing it).
 
@@ -33,7 +40,7 @@ Ideas: `FEATURES.md`. Parked iPad/iPhone plan: `PORTING.md`. Proposed Suwayomi r
 Launching with `FOLIO_DEBUG=<token>` makes Folio listen for distributed notifications `local.folio.debug.<token>`
 (`DebugHook.swift`). No screen-recording permission is needed — snapshots capture Folio's own window.
 `Tools/qa.sh start|send|snap|log|stop` wraps it (off-screen, throwaway HOME, never steals focus).
-Commands: `size:WxH` `sidebar:library|recents|search|extensions|settings|<source id>` `series:<title>` `back` `read:<title>`
+Commands: `size:WxH` `sidebar:library|recents|search|extensions|settings|downloads|<source id>` `fake-downloads` (made-up paused queue on the Downloads page) `series:<title>` `back` `read:<title>`
 `open-local:<folder>` `add-local:<folder>` (a series folder inside the local library; name or path) `cat-new:<name>` `cat-set:<series>|<category>` `set:display=list|sort=title|incognito=on|hidesaved=on|notice=on|off|pin=<digits>|pin=off` `lock` `type-pin:<digits>`
 `set:pin=touchid` `set:privacy=on|off` `set:mode=webtoon|rightToLeft|leftToRight` `privacy:on|off` (black background cover) `setup:show|done` `setup-step:<0-3>` (first-launch setup; `qa.sh start` marks it done) `gsearch:<query>` `cmd:viewport:<f>` `cmd:points:<n>` `cmd:zoomin|zoomout|zoomreset` `cmd:next|prev` `cmd:page:<n>`
 `cmd:mode:webtoon|rightToLeft|leftToRight` `cmd:controls:on|off` `cmd:popover:chapters|settings|none` `web:<url>` `repo-add:<index url>` `blacklist:<title>` `cmd:autoscroll:on` `cmd:width:<0.3-1>|crop:on|double:on|split:on` (this comic only) `state` `snap:<png>` `quit`.

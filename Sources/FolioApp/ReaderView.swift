@@ -129,6 +129,7 @@ struct ReaderView: View {
             case "m": model.toggleControls()
             case "f": NSApp.keyWindow?.toggleFullScreen(nil)
             case "b": model.toggleBookmark()
+            case "w": model.openInWeb()
             case "c": model.popover = model.popover == .chapters ? nil : .chapters
             case "s": model.popover = model.popover == .settings ? nil : .settings
             case "=", "+": model.zoomIn()

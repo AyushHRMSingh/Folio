@@ -267,7 +267,7 @@ struct ReaderSettings: View {
             HStack { TextAction(title: "← Back") { showShortcuts = false }; Spacer() }.padding(.vertical, 10)
             ForEach([("Space / ↓ ↑", "scroll"), ("[ ]", "previous / next chapter"), ("A", "auto-scroll"), ("+ − 0", "zoom, reset"),
                      ("pinch · double-click", "zoom"), ("C", "chapters"), ("S", "reading settings"), ("B", "bookmark"), ("F", "full screen"), ("M", "show controls"),
-                     ("right-click a page", "copy, save, share, use as cover"), ("Esc", "back")], id: \.0) { k, d in
+                     ("W", "open chapter in WebView"), ("right-click a page", "copy, save, share, WebView, use as cover"), ("Esc", "back")], id: \.0) { k, d in
                 HStack(alignment: .firstTextBaseline) {
                     Text(k).font(.system(size: 13.5, weight: .medium, design: .monospaced)).foregroundStyle(Theme.ink)
                     Spacer(minLength: 12)

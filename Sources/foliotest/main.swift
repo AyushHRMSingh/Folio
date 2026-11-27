@@ -1,4 +1,5 @@
 import AppKit
+import CryptoKit
 import FolioCore
 import Foundation
 
@@ -25,6 +26,25 @@ func png(_ label: String) -> Data {
     NSGraphicsContext.restoreGraphicsState()
     return rep.representation(using: .png, properties: [:])!
 }
+/// A source that counts page-list requests and takes a while to answer (for the sharing tests).
+final class CountingSource: Source, @unchecked Sendable {
+    let id = "count", name = "Counting"
+    private let l = NSLock()
+    private var _pageCalls = 0, _cancelled = 0
+    var pageCalls: Int { l.withLock { _pageCalls } }
+    var cancelled: Int { l.withLock { _cancelled } }
+    func popular(page: Int) async throws -> SeriesPage { SeriesPage(series: [], hasNextPage: false) }
+    func search(_ query: String, page: Int) async throws -> SeriesPage { SeriesPage(series: [], hasNextPage: false) }
+    func details(_ s: Series) async throws -> Series { s }
+    func chapters(_ s: Series) async throws -> [Chapter] { [Chapter(url: "c1", name: "Chapter 1", number: 1), Chapter(url: "c2", name: "Chapter 2", number: 2)] }
+    func pages(_ c: Chapter, of s: Series) async throws -> [PageRef] {
+        l.withLock { _pageCalls += 1 }
+        do { try await Task.sleep(for: .milliseconds(300)) } catch { l.withLock { _cancelled += 1 }; throw error }
+        return [.remote(URL(string: "https://example.invalid/\(c.url)/1.png")!)]
+    }
+    func coverData(_ s: Series) async throws -> Data? { nil }
+}
+
 func write(_ d: Data, _ u: URL) { try! FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); try! d.write(to: u) }
 func run(_ exe: String, _ args: [String], cwd: URL? = nil) { let p = Process(); p.executableURL = URL(fileURLWithPath: exe); p.arguments = args; p.currentDirectoryURL = cwd; p.standardOutput = FileHandle.nullDevice; try! p.run(); p.waitUntilExit() }
 
@@ -318,6 +338,44 @@ func run(_ exe: String, _ args: [String], cwd: URL? = nil) { let p = Process(); 
     check(lib.downloadsPending == 0 && lib.entry(oe.id)!.chapters.allSatisfy(\.downloaded), "downloads: queue finishes, every chapter available offline")
     lib.enqueueDownloads(oe.id, chapters: och.map(\.url))
     check(lib.downloadsPending == 0, "downloads: already-downloaded chapters aren't queued again")
+    for c in och { lib.deleteDownload(oe.id, chapter: c.url) }
+    lib.pauseDownloads()
+    lib.enqueueDownloads(oe.id, chapters: och.map(\.url))
+    try await Task.sleep(for: .milliseconds(300))
+    check(lib.downloadsPending == 2 && lib.downloadJobs.allSatisfy { $0.state == .queued }, "queue: paused, nothing starts")
+    lib.moveDownloadToTop(lib.downloadJobs[1].key)
+    check(lib.downloadJobs.map(\.chapterURL) == [och[1].url, och[0].url], "queue: move to top")
+    lib.moveDownloads(fromOffsets: [0], toOffset: 2)
+    check(lib.downloadJobs.map(\.chapterURL) == [och[0].url, och[1].url], "queue: drag reorder")
+    lib.removeDownload(lib.downloadJobs[1].key)
+    check(lib.downloadJobs.count == 1 && lib.downloadsPending == 1, "queue: remove one")
+    lib.resumeDownloads()
+    for _ in 0..<100 where lib.downloadsPending > 0 { try await Task.sleep(for: .milliseconds(100)) }
+    let qd = lib.entry(oe.id)!.chapters
+    check(lib.downloadJobs.isEmpty && qd.first { $0.chapter.url == och[0].url }?.downloaded == true
+          && qd.first { $0.chapter.url == och[1].url }?.downloaded == false, "queue: resume finishes what's left, removed chapter not downloaded")
+    lib.enqueueDownloads(oe.id, chapters: [och[1].url])
+    for _ in 0..<100 where lib.downloadsPending > 0 { try await Task.sleep(for: .milliseconds(100)) }
+    // page lists: the reader and a download asking at once share one request; nobody left → it's cancelled
+    let counter2 = CountingSource()
+    lib._sourcesForTesting = [counter2]
+    let cs = try await lib.add(Series(sourceID: "count", url: "s1", title: "Counted"))
+    let c1 = cs.chapters.first { $0.chapter.url == "c1" }!.chapter, c2 = cs.chapters.first { $0.chapter.url == "c2" }!.chapter
+    async let pl1 = lib.pages(cs.series, c1)
+    async let pl2 = lib.pages(cs.series, c1)
+    let (r1, r2) = try await (pl1, pl2)
+    check(counter2.pageCalls == 1 && r1.1.count == 1 && r2.1.count == 1, "pages: two asks for one chapter's page list share one request (\(counter2.pageCalls)×)")
+    let gone = Task { try await lib.pages(cs.series, c2) }
+    try await Task.sleep(for: .milliseconds(50)); gone.cancel()
+    _ = try? await gone.value
+    try await Task.sleep(for: .milliseconds(100))
+    check(counter2.cancelled == 1 && lib.entry(cs.id)?.chapters.first { $0.chapter.url == "c2" }?.pageURLs == nil,
+          "pages: a page-list request nobody wants any more is cancelled and saves nothing")
+    var gaveNothing = false
+    do { try await lib.download("no-such-series", chapter: "x") } catch { gaveNothing = true }
+    check(gaveNothing, "downloads: a chapter that's no longer in the library is an error, not a silent success")
+    lib.remove(cs.id); lib._sourcesForTesting = []
+
     lib.settings.deleteAfterRead = true
     lib.setRead(oe.id, chapters: [och[0].url], true)
     lib.setBookmarked(oe.id, chapter: och[1].url, true); lib.setRead(oe.id, chapters: [och[1].url], true)
@@ -546,6 +604,65 @@ func network() async throws {
     var cfImage = false
     do { _ = try await ImageFetch.data(key: "t|html") { Data("<html>Just a moment... cloudflare</html>   ".utf8) } } catch is CloudflareError { cfImage = true }
     check(cfImage && DiskCache.shared.get("t|html") == nil, "net: an HTML challenge page is never cached and surfaces as a Cloudflare error")
+    // cut-off images: never cached or shown, fetched again
+    let fullPNG = png("cut"), cutPNG = fullPNG.prefix(fullPNG.count * 2 / 3)
+    let jpg = NSBitmapImageRep(data: fullPNG)!.representation(using: .jpeg, properties: [:])!
+    check(ImageFetch.isComplete(fullPNG) && !ImageFetch.isComplete(Data(cutPNG)) && ImageFetch.isComplete(jpg) && !ImageFetch.isComplete(jpg.prefix(jpg.count - 40)),
+          "net: a cut-off PNG or JPEG is recognised")
+    nonisolated(unsafe) var tries = 0
+    let healed = try await ImageFetch.data(key: "t|cut-once") { tries += 1; return tries == 1 ? Data(cutPNG) : fullPNG }
+    check(healed == fullPNG && tries == 2 && DiskCache.shared.get("t|cut-once") == fullPNG, "net: a cut-off image is fetched again and only the whole one is cached")
+    var gaveUp = false
+    do { _ = try await ImageFetch.data(key: "t|cut-always") { Data(cutPNG) } } catch is IncompleteImageError { gaveUp = true }
+    check(gaveUp && DiskCache.shared.get("t|cut-always") == nil, "net: an image that always arrives cut off is an error, not a smeared page")
+    DiskCache.shared.set("t|cut-old", Data(cutPNG))
+    let replaced = try await ImageFetch.data(key: "t|cut-old") { fullPNG }
+    check(replaced == fullPNG, "net: a cut-off image already in the cache is replaced")
+    // the same image asked for twice at once reaches the source once (the engine breaks pages when it gets both)
+    final class Count: @unchecked Sendable { var n = 0; let l = NSLock(); func add() { l.withLock { n += 1 } } }
+    let hits = Count()
+    let slow: @Sendable () async throws -> Data = { hits.add(); try await Task.sleep(for: .milliseconds(300)); return fullPNG }
+    async let a1 = ImageFetch.data(key: "t|twice", slow)
+    async let a2 = ImageFetch.data(key: "t|twice", slow)
+    let both = try await [a1, a2]
+    check(hits.n == 1 && both.allSatisfy { $0 == fullPNG }, "net: two requests for the same image at once share one load (\(hits.n)×)")
+    let hits2 = Count()
+    let slow2: @Sendable () async throws -> Data = { hits2.add(); try await Task.sleep(for: .milliseconds(300)); return fullPNG }
+    let quitter = Task { try await ImageFetch.data(key: "t|share-cancel", slow2) }
+    let stayer = Task { try await ImageFetch.data(key: "t|share-cancel", slow2) }
+    try await Task.sleep(for: .milliseconds(50)); quitter.cancel()
+    let kept = try? await stayer.value
+    check(kept == fullPNG && hits2.n == 1, "net: one caller giving up doesn't stop the load for the other")
+    // a queued read-ahead page that you now look at jumps the line
+    final class Order: @unchecked Sendable { var v: [String] = []; let l = NSLock(); func add(_ s: String) { l.withLock { v.append(s) } } }
+    let started = Order()
+    var blockers: [Task<Data, Error>] = []
+    for i in 0..<6 {       // fill every slot
+        blockers.append(Task { try await FetchPriority.$current.withValue(.low) {
+            try await ImageFetch.data(key: "t|blk\(i)") { try await Task.sleep(for: .milliseconds(400)); return fullPNG } } })
+    }
+    try await Task.sleep(for: .milliseconds(50))
+    let pb = Task { try await FetchPriority.$current.withValue(.low) { try await ImageFetch.data(key: "t|pB", alias: "page-B") { started.add("B"); return fullPNG } } }
+    try await Task.sleep(for: .milliseconds(20))
+    let pa = Task { try await FetchPriority.$current.withValue(.low) { try await ImageFetch.data(key: "t|pA", alias: "page-A") { started.add("A"); return fullPNG } } }
+    try await Task.sleep(for: .milliseconds(20))
+    let seen = Task { try await FetchPriority.$current.withValue(.high) { try await ImageFetch.data(key: "t|pA", alias: "page-A") { started.add("A2"); return fullPNG } } }
+    _ = try await (pa.value, pb.value, seen.value)
+    for b in blockers { _ = try? await b.value }
+    check(started.v.first == "A" && !started.v.contains("A2"), "net: a waiting read-ahead page asked for on screen goes first and isn't fetched twice (\(started.v))")
+
+    // cut-off check is not fooled by padding after the end marker
+    var padded = jpg; padded.append(Data(repeating: 0, count: 300))
+    check(ImageFetch.isComplete(padded), "net: a whole JPEG with padding after its end marker counts as complete")
+
+    // cover max age counts from when it was fetched, not when it was last looked at
+    let ageDir = tmp.appendingPathComponent("agecache")
+    DiskCache(dir: ageDir, limit: 1 << 20).set("cover", fullPNG)
+    let ageFile = ageDir.appendingPathComponent(SHA256.hash(data: Data("cover".utf8)).prefix(16).map { String(format: "%02x", $0) }.joined())
+    try FileManager.default.setAttributes([.creationDate: Date().addingTimeInterval(-8 * 86400), .modificationDate: Date()], ofItemAtPath: ageFile.path)
+    let ageCache = DiskCache(dir: ageDir, limit: 1 << 20)
+    check(ageCache.get("cover", maxAge: 7 * 86400) == nil && ageCache.get("cover") != nil,
+          "net: a cover fetched 8 days ago expires even though it was looked at today")
 }
 
 // ---------- saved vs read history

@@ -3,8 +3,8 @@ import SwiftUI
 import WebKit
 
 // MARK: - Folio's web view
-// A real (small) browser for the source's own pages: a separate resizable window with a persistent, Folio-only
-// website data store, so logins and Cloudflare checks you pass survive between uses but never touch Safari.
+// A real (small) browser for the source's own pages, shown as a page inside Folio's window (`AppModel.web`), with a
+// persistent, Folio-only website data store, so logins and Cloudflare checks you pass survive but never touch Safari.
 
 enum WebStore {
     /// Fixed identifier of Folio's website data store (macOS 14+). Never change it, or saved logins are orphaned.
@@ -19,36 +19,6 @@ enum WebStore {
     /// Removes everything the web view has stored: cookies, caches, local storage, IndexedDB.
     static func clear() async {
         await store.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast)
-    }
-}
-
-/// Owns the single "Folio Web" window. `AppModel.openWeb` is the only entry point.
-@MainActor
-final class WebWindow: NSObject, NSWindowDelegate {
-    static let shared = WebWindow()
-    private var window: NSWindow?
-    private var state: WebState?
-
-    func open(_ url: URL) {
-        if let window, let state {
-            state.load(url); window.makeKeyAndOrderFront(nil); return
-        }
-        let s = WebState()
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1100, height: 780),
-                         styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        w.title = "Folio Web"
-        w.minSize = NSSize(width: 640, height: 440)
-        w.isReleasedWhenClosed = false
-        w.delegate = self
-        w.contentView = NSHostingView(rootView: WebBrowserView(state: s) { [weak self] in self?.window?.close() })
-        w.center()
-        window = w; state = s
-        s.load(url)
-        w.makeKeyAndOrderFront(nil)
-    }
-
-    func windowWillClose(_ n: Notification) {
-        state?.shutdown(); state = nil; window = nil
     }
 }
 
@@ -156,7 +126,6 @@ struct WebBrowserView: View {
                 }
             }
         }
-        .frame(minWidth: 640, minHeight: 440)
         .background(Theme.bg)
         .background(shortcuts)
         // Follow the page's address unless the user is typing something of their own.
@@ -166,11 +135,17 @@ struct WebBrowserView: View {
             shownAddress = new
         }
         .onChange(of: addressFocused) { _, f in if !f { address = state.url?.absoluteString ?? "" } }
-        .onAppear { address = state.url?.absoluteString ?? ""; shownAddress = address }    // loading may start before the window shows
+        .onAppear { address = state.url?.absoluteString ?? ""; shownAddress = address }    // loading may start before the page shows
     }
 
     var toolbar: some View {
         HStack(spacing: 4) {
+            Button(action: close) {
+                HStack(spacing: 5) { Image(systemName: "chevron.left").font(.system(size: 13, weight: .semibold)); Text("Back") }
+                    .font(.system(size: 14)).foregroundStyle(Theme.ink).padding(.horizontal, 9).padding(.vertical, 5).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain).help("Back to Folio (Esc)")
+            Rectangle().fill(Theme.line).frame(width: 1, height: 18).padding(.horizontal, 6)
             TextAction(title: "←", disabled: !state.canGoBack) { state.view.goBack() }
             TextAction(title: "→", disabled: !state.canGoForward) { state.view.goForward() }
             TextAction(title: state.loading ? "Stop" : "Reload") { state.reloadOrStop() }
@@ -185,9 +160,9 @@ struct WebBrowserView: View {
                 NSPasteboard.general.setString(state.url?.absoluteString ?? address, forType: .string)
             }
             TextAction(title: "Open in browser", disabled: state.url == nil) { if let u = state.url { NSWorkspace.shared.open(u) } }
-            TextAction(title: "Done", action: close)
         }
-        .padding(.horizontal, 12).padding(.vertical, 10)
+        // Clear of the window's traffic lights: the title bar is transparent and the page runs under it.
+        .padding(.leading, 78).padding(.trailing, 12).padding(.top, 8).padding(.bottom, 10)
     }
 
     /// Hidden buttons carry the keyboard shortcuts.
@@ -205,6 +180,10 @@ struct WebBrowserView: View {
 
 struct WebHost: NSViewRepresentable {
     let view: WKWebView
-    func makeNSView(context: Context) -> WKWebView { view }
+    func makeNSView(context: Context) -> WKWebView {
+        // Keys go to the page, not to the reader left open underneath (Space would scroll it).
+        DispatchQueue.main.async { [view] in view.window?.makeFirstResponder(view) }
+        return view
+    }
     func updateNSView(_ v: WKWebView, context: Context) {}
 }

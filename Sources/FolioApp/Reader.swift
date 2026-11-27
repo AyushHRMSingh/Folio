@@ -469,6 +469,14 @@ final class ReaderModel: ObservableObject {
         }
     }
 
+    /// The chapter's own page on the source's website (or the series page when the source gives none), in Folio Web.
+    func openInWeb(_ c: Chapter? = nil) {
+        let ch = c ?? chapter
+        guard let u = ch.webURL ?? series.webURL else { show(toast: "This source didn\u{2019}t give a web address"); return }
+        autoScroll = false
+        app.openWeb(u, title: "\(series.title) · \(ch.name)")
+    }
+
     var bookmarked: Bool { state?.bookmarked ?? false }
     func toggleBookmark() {
         library.setBookmarked(series.id, chapter: chapter.url, !bookmarked)

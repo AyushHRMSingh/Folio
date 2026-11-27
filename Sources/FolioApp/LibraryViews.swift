@@ -216,7 +216,7 @@ struct LibraryTools: View {
                 }
                 .frame(width: 26, height: 24).foregroundStyle(Theme.dim).contentShape(Rectangle())
             }
-            .buttonStyle(.plain).disabled(app.updating).help("Update library")
+            .buttonStyle(.plain).disabled(app.updating).help("Update library  \u{2318}R")
             Menu {
                 Button("Random series") { if let e = library.randomEntry() { app.path.append(e.series) } }
                 Button("Import files…") { app.importLocal() }

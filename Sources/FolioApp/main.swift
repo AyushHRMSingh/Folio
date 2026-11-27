@@ -33,6 +33,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.contentMinSize = NSSize(width: 760, height: 520)
         model.window = window
         window.center()
+        // Escape = back, everywhere. It never leaves full screen (⌃⌘F or F in the reader does that), and
+        // with nothing to go back to it does nothing.
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            MainActor.assumeIsolated {
+                guard e.keyCode == 53, let self, let m = self.model, !m.lock.locked, !m.privacy.covered,
+                      e.window === self.window, !(self.window.firstResponder is NSText) else { return e }
+                if m.web != nil {
+                    m.closeWeb()                       // back to where you were (the reader stays open underneath)
+                } else if let r = m.reader {
+                    if r.popover != nil { r.popover = nil } else { r.close() }
+                } else if !m.path.isEmpty {
+                    m.path.removeLast()
+                }
+                return nil
+            }
+        }
         if ProcessInfo.processInfo.environment["FOLIO_DEBUG"] != nil {
             // Test instance: off-screen, no Dock icon, never steals focus.
             NSApp.setActivationPolicy(.accessory)
@@ -43,20 +59,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         window.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
-        // Escape = back, everywhere. It never leaves full screen (⌃⌘F or F in the reader does that), and
-        // with nothing to go back to it does nothing.
-        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
-            MainActor.assumeIsolated {
-                guard e.keyCode == 53, let self, let m = self.model, !m.lock.locked, !m.privacy.covered,
-                      NSApp.keyWindow === self.window, !(self.window.firstResponder is NSText) else { return e }
-                if let r = m.reader {
-                    if r.popover != nil { r.popover = nil } else { r.close() }
-                } else if !m.path.isEmpty {
-                    m.path.removeLast()
-                }
-                return nil
-            }
-        }
         // Quit cleanly on SIGTERM so the extension engine is stopped first.
         signal(SIGTERM, SIG_IGN)
         let src = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
@@ -101,8 +103,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let file = NSMenu(title: "File")
         file.addItem(withTitle: "Import Files…", action: #selector(importFiles), keyEquivalent: "o")
         file.addItem(withTitle: "Search All Sources", action: #selector(searchAll), keyEquivalent: "k")
-        let upd = file.addItem(withTitle: "Update Library", action: #selector(updateLibrary), keyEquivalent: "r")
-        upd.keyEquivalentModifierMask = [.command, .shift]
+        file.addItem(withTitle: "Update Library", action: #selector(updateLibrary), keyEquivalent: "r")
         file.addItem(.separator())
         file.addItem(withTitle: "Close Window", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
         fileItem.submenu = file
@@ -129,10 +130,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         vi("Show Reader Controls", #selector(menuControls), "m", [], at: 0)
         vi("Reading Settings…", #selector(menuReadingSettings), "s", [], at: 1)
         vi("Chapters…", #selector(menuChapters), "c", [], at: 2)
-        view.insertItem(.separator(), at: 3)
-        vi("Zoom In", #selector(menuZoomIn), "=", .command, at: 4)
-        vi("Zoom Out", #selector(menuZoomOut), "-", .command, at: 5)
-        vi("Actual Size", #selector(menuZoomReset), "0", .command, at: 6)
+        vi("Open Chapter in WebView", #selector(menuWeb), "w", [], at: 3)
+        view.insertItem(.separator(), at: 4)
+        vi("Zoom In", #selector(menuZoomIn), "=", .command, at: 5)
+        vi("Zoom Out", #selector(menuZoomOut), "-", .command, at: 6)
+        vi("Actual Size", #selector(menuZoomReset), "0", .command, at: 7)
         viewItem.submenu = view
 
         let goItem = NSMenuItem(); main.addItem(goItem)
@@ -141,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         go.addItem(withTitle: "Recent", action: #selector(goRecent), keyEquivalent: "2")
         go.addItem(withTitle: "Sources", action: #selector(goSources), keyEquivalent: "3")
         go.addItem(withTitle: "Settings", action: #selector(goSettings), keyEquivalent: "4")
+        go.addItem(withTitle: "Downloads", action: #selector(goDownloads), keyEquivalent: "5")
         go.addItem(.separator())
         go.addItem(withTitle: "Back", action: #selector(goBack), keyEquivalent: "[")
         goItem.submenu = go
@@ -162,6 +165,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func menuControls() { model.reader?.toggleControls() }
     @objc func menuReadingSettings() { model.reader?.popover = .settings }
     @objc func menuChapters() { model.reader?.popover = .chapters }
+    @objc func menuWeb() { model.reader?.openInWeb() }
     @objc func menuZoomIn() { model.reader?.zoomIn() }
     @objc func menuZoomOut() { model.reader?.zoomOut() }
     @objc func menuZoomReset() { model.reader?.resetZoom() }
@@ -169,19 +173,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func validateMenuItem(_ item: NSMenuItem) -> Bool {
         if model?.lock.locked == true { return false }                 // nothing behind the lock screen
         if item.action == #selector(lockNow) { return model?.lock.enabled == true }
-        let readerActions: [Selector] = [#selector(menuControls), #selector(menuReadingSettings), #selector(menuChapters),
+        let readerActions: [Selector] = [#selector(menuControls), #selector(menuReadingSettings), #selector(menuChapters), #selector(menuWeb),
                                          #selector(menuZoomIn), #selector(menuZoomOut), #selector(menuZoomReset)]
         if let a = item.action, readerActions.contains(a) { return model?.reader != nil }
         return true
     }
 
-    private func go(_ s: SidebarItem) { model.closeReader(); model.sidebar = s; model.path = NavigationPath() }
+    private func go(_ s: SidebarItem) { model.closeWeb(); model.closeReader(); model.sidebar = s; model.path = NavigationPath() }
     @objc func goLibrary() { go(.library) }
     @objc func goRecent() { go(.recents) }
     @objc func goSources() { go(.sources) }
     @objc func goSettings() { go(.settings) }
+    @objc func goDownloads() { go(.downloads) }
     @objc func goBack() {
-        if model.reader != nil { model.reader?.close() }
+        if let w = model.web { if w.canGoBack { w.view.goBack() } else { model.closeWeb() } }
+        else if model.reader != nil { model.reader?.close() }
         else if !model.path.isEmpty { model.path.removeLast() }
         else if let cur = model.sidebar, cur == .extensions || { if case .source = cur { true } else { false } }() { model.sidebar = .sources }
     }
@@ -189,25 +195,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let a = NSAlert()
         a.messageText = "Keyboard Shortcuts"
         a.informativeText = """
-        ⌘1–4  Library, Recent, Sources, Settings
+        ⌘1–5  Library, Recent, Sources, Settings, Downloads
         ⌘,  Settings
         ⌘[  or Esc  Back
         ⌘F / ⌘K  Search
-        ⇧⌘R  Update library
+        ⌘R  Update library
         ⌘L  Lock Folio (with a PIN set)
 
         In the reader
         Space / ↓ ↑  scroll
         [ ]  previous / next chapter
-        A  auto-scroll    B  bookmark    C  chapters
+        A  auto-scroll    B  bookmark    C  chapters    W  WebView
         F  full screen    M  show controls
         + − 0  zoom, reset
         """
         a.runModal()
     }
     @objc func importFiles() { model.importLocal() }
-    @objc func updateLibrary() { model.updateLibrary() }
+    @objc func updateLibrary() { if let w = model.web { w.reloadOrStop() } else { model.updateLibrary() } }   // ⌘R reloads the web page while it's open
     @objc func searchAll() {
+        model.closeWeb()
         model.closeReader()
         model.sidebar = .library
         model.path = NavigationPath()

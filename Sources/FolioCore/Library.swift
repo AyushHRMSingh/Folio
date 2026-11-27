@@ -110,12 +110,21 @@ public final class Library: ObservableObject {
     @Published public internal(set) var entries: [LibraryEntry] = []
     @Published public var settings = FolioSettings() { didSet { scheduleSave() } }
     @Published public internal(set) var downloading: Set<String> = []
-    /// Chapters waiting for or in the middle of a download (queue + running).
+    /// Chapters waiting for or in the middle of a download (queue + running; failed ones not counted).
     @Published public internal(set) var downloadsPending = 0
+    /// The download queue in order: running, waiting and failed chapters. The Downloads page shows it.
+    @Published public internal(set) var downloadJobs: [DownloadJob] = []
+    /// While paused nothing starts; chapters that were running go back to waiting at the front.
+    @Published public internal(set) var downloadsPaused = false
     public var onDownloadError: ((String) -> Void)?
-    var queue: [(id: String, url: String)] = []
-    var running = 0
     var tasks: [String: Task<Void, Never>] = [:]
+    /// Page-list requests in flight, one per chapter: the reader and a download asking at once share it
+    /// (the engine stores the list as it fetches; two at once can trip over each other).
+    var pageListLoads: [String: PageListLoad] = [:]
+    /// One shared page-list request and how many callers still want it (cancelled when none do).
+    final class PageListLoad { let task: Task<[PageRef], Error>; var active = 1; init(_ t: Task<[PageRef], Error>) { task = t } }
+    /// Seconds each finished chapter took this session, for the time-left estimate.
+    var chapterSeconds: [Double] = []
 
     public let local: LocalSource
     var opds: [String: OPDSSource] = [:]
@@ -174,8 +183,10 @@ public final class Library: ObservableObject {
     // MARK: sources
 
     public var sources: [Source] {
-        [local] + settings.servers.map { opdsSource($0) } + settings.extensionSources.map { extensionSource($0) }
+        [local] + settings.servers.map { opdsSource($0) } + settings.extensionSources.map { extensionSource($0) } + _sourcesForTesting
     }
+    /// foliotest only: extra sources (e.g. one that counts requests).
+    public var _sourcesForTesting: [Source] = []
 
     var ext: [String: ExtensionSource] = [:]
     public func extensionSource(_ i: ExtensionSourceInfo) -> ExtensionSource {
@@ -553,7 +564,23 @@ public final class Library: ObservableObject {
             let refs = urls.compactMap { URL(string: $0) }.map { PageRef.remote($0) }
             if refs.count == urls.count { return (src, refs) }
         }
-        let refs = try await src.pages(c, of: s)
+        let k = s.id + "|" + c.url
+        let load: PageListLoad
+        if let l = pageListLoads[k], l.active > 0 { l.active += 1; load = l } else {
+            load = PageListLoad(Task { try await src.pages(c, of: s) })
+            pageListLoads[k] = load
+        }
+        let result = await withTaskCancellationHandler {
+            await load.task.result
+        } onCancel: {
+            Task { @MainActor in
+                load.active -= 1
+                if load.active == 0 { load.task.cancel() }     // the reader closed and no download wants it either
+            }
+        }
+        if pageListLoads[k] === load { pageListLoads[k] = nil }
+        try Task.checkCancellation()
+        let refs = try result.get()
         let remote = refs.compactMap { r -> String? in if case .remote(let u) = r { u.absoluteString } else { nil } }
         if remote.count == refs.count && !settings.incognito { update(s.id, c.url) { st, _ in st.pageURLs = remote; st.pagesFetched = Date(); st.pageCount = remote.count } }
         return (src, refs)

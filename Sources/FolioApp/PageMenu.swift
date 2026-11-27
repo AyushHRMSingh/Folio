@@ -18,8 +18,9 @@ enum PageMenu {
     }
 
     /// `view` anchors the share sheet; `at` is the point in it.
+    /// `chapter` is the chapter the clicked page belongs to (in a webtoon strip it can differ from the current one).
     static func make(page: PageRef, number: Int, model: ReaderModel, source: Source, view: NSView, at point: NSPoint,
-                     cropToggle: Bool) -> NSMenu {
+                     cropToggle: Bool, chapter: Chapter? = nil) -> NSMenu {
         let m = NSMenu()
         m.autoenablesItems = false
         let head = NSMenuItem(title: "Page \(number)", action: nil, keyEquivalent: "")
@@ -56,6 +57,7 @@ enum PageMenu {
             }
         })
         m.addItem(.separator())
+        m.addItem(item("Open chapter in WebView", symbol: "globe") { model.openInWeb(chapter) })
         m.addItem(item("Use as cover", symbol: "photo") {
             Task {
                 guard let d = await bytes(), let img = Images.decode(d, maxWidth: 600),
